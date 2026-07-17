@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 路径配置：用于系统分享（Intent.ACTION_SEND）。
+  - files-path:             Context.getFilesDir()      → 备用
+  - cache-path:             Context.getCacheDir()      → 分享时若需拷贝到缓存目录的中间文件
+  - external-files-path:    Context.getExternalFilesDir(null) 子路径
+                            PhotoStorage.getDir() 用的是 getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+                            即 .../Android/data/<package>/files/Pictures/，故 path 写 "Pictures/"
+  仅暴露子路径，避免被恶意 App 读取整个目录。
+-->
+<paths>
+    <files-path name="photos" path="." />
+    <cache-path name="cache" path="." />
+    <external-files-path name="ext_photos" path="Pictures/" />
+</paths>

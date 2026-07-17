@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- 主界面主题：不透明，背景色避免启动白闪 -->
+    <style name="Theme.Picocam" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/retro_paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

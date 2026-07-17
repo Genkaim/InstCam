@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 复古底色，用作 windowBackground，避免启动白闪 -->
+    <color name="retro_paper">#E8DFC8</color>
+    <color name="retro_dark">#241C17</color>
+</resources>
