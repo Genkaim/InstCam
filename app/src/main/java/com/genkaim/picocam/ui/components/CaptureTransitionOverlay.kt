@@ -239,9 +239,10 @@ fun CaptureTransitionOverlay(
     val isTop = (isCenterY - isH / 2f).coerceAtLeast(4f)
 
     // —— 打印态（加长版）：仅【横向】变长（更宽），高度/圆角/竖向位置完全沿用设置 → 横向出纸插槽外观；
-    //    以设置岛中心为锚点左右对称加长；打印完成后由 shrink 把宽度过渡回设置指定的正常长度(isW)。 ——
+    //    加长后【强制居中于屏幕】——即便设置里的灵动岛不在画面中央，出纸插槽也始终落在屏幕中线，
+    //    避免非对称加长导致整体偏左/偏右；打印完成后由 shrink 把宽度过渡回设置指定的正常长度(isW)。 ——
     val pillW = screenW * 0.78f
-    val pillLeft = isCenterX - pillW / 2f     // 横向对称加长：左/右边同时外扩，中心不变
+    val pillLeft = (screenW - pillW) / 2f      // 加长版强制居中：extend 期间从设置岛位置滑向屏幕中线
     val pillTop = isTop                        // 高度相同 → 顶边相同
     val pillCenterY = isCenterY
 

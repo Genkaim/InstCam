@@ -18,6 +18,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -209,6 +210,7 @@ fun CameraScreen(vm: CameraViewModel = viewModel()) {
 private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit, onShutter: () -> Unit) {
     val context = LocalContext.current
     val photos by vm.photos.collectAsStateWithLifecycle()
+    val hasTakenPhoto by vm.hasTakenPhoto.collectAsStateWithLifecycle()
     val flashMode by vm.flashMode.collectAsStateWithLifecycle()
     val isBackCamera by vm.isBackCamera.collectAsStateWithLifecycle()
     val zoomLevel by vm.zoomLevel.collectAsStateWithLifecycle()
@@ -392,6 +394,67 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     val ctrlNaturalDp = with(density) { ctrlNaturalPx.toDp() }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        // 相册顶部彩色光晕（空相册引导氛围）：
+        // · 显示时机：【尚未拍过照】(!hasTakenPhoto) 且 【相册为空】(photos.isEmpty()) 时显示——双重保证；
+        //   第一次按下快门后或相册有照片时均不显示。
+        // · 位置：本 Box 是覆盖整个屏幕的容器（无 statusBarsPadding），故用 Alignment.TopCenter 贴【屏幕绝对顶边】（碰到状态栏/相机区上方）。
+        // · 光晕中心：水平跟随设置里灵动岛位置 diConfig.posX（非强制居中），垂直做轻微涌动；仅做上下涌动 + 反相呼吸，不水平漂移。
+        // · 层级：作为本 Box 第一个子项（最底），取景框/灵动岛/相册在其上；空相册时屏幕顶部显示，小岛浮于其上。
+        // · 可见性：相册态(p=0)最亮，取景框展开(p→1)淡出；首次进入 900ms 渐入。
+        // · 风格：蓝白晨曦薄雾（参考 Gemini 首页），冷色调柔和无色边界。
+        if (!hasTakenPhoto && photos.isEmpty()) {
+            val albumGlowFade = (1f - p).coerceIn(0f, 1f)
+            val glowEnter = remember { Animatable(0f) }
+            LaunchedEffect(Unit) { glowEnter.animateTo(1f, tween(900)) }
+            val glowTrans = rememberInfiniteTransition(label = "albumGlow")
+            val breatheA by glowTrans.animateFloat(0.70f, 1.0f, infiniteRepeatable(tween(6000, easing = LinearEasing), RepeatMode.Reverse))
+            val breatheB by glowTrans.animateFloat(1.0f, 0.70f, infiniteRepeatable(tween(8500, easing = LinearEasing), RepeatMode.Reverse))  // 反相呼吸，此消彼长
+            val yWarm by glowTrans.animateFloat(-0.05f, 0.03f, infiniteRepeatable(tween(7000, easing = LinearEasing), RepeatMode.Reverse))  // 轻微上下涌动
+            val yCool by glowTrans.animateFloat(0.0f, 0.10f, infiniteRepeatable(tween(9000, easing = LinearEasing), RepeatMode.Reverse))
+            val glowVisible = glowEnter.value * albumGlowFade
+            if (glowVisible > 0.01f) {
+                // 主层：晨曦核心（极浅蓝白 → 浅蓝 → 中蓝 → 透明）
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .graphicsLayer { alpha = glowVisible * breatheA }
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFFF2F7FF).copy(alpha = 0.72f),   // 极浅蓝白（核心）
+                                    Color(0xFFDCE9FF).copy(alpha = 0.52f),   // 浅蓝
+                                    Color(0xFFBDD0F5).copy(alpha = 0.28f),   // 中蓝
+                                    Color.Transparent,
+                                ),
+                                center = Offset(diConfig.posX, yWarm),
+                                radius = 720f,
+                            ),
+                        ),
+                )
+                // 辅层：青紫薄雾（同样居中，反相呼吸叠加出流动层次）
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .graphicsLayer { alpha = glowVisible * breatheB }
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFFD4ECFA).copy(alpha = 0.42f),   // 浅青
+                                    Color(0xFFC4D4F5).copy(alpha = 0.34f),   // 蓝
+                                    Color(0xFFCCBFE8).copy(alpha = 0.20f),   // 微紫
+                                    Color.Transparent,
+                                ),
+                                center = Offset(diConfig.posX, yCool),
+                                radius = 820f,
+                            ),
+                        ),
+                )
+            }
+        }
         // 模糊已移至 CaptureTransitionOverlay 内部（用刚拍的照片做模糊背景层，scrim 之前），
         // 相机内容层（取景框/操控区/相册/效果面板）保持清晰，用户能看到相册里的其他照片。
         Column(modifier = Modifier.fillMaxSize()) {

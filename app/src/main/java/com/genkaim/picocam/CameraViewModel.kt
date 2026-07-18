@@ -122,6 +122,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _photos = MutableStateFlow<List<File>>(emptyList())
     val photos: StateFlow<List<File>> = _photos.asStateFlow()
+    /** 是否已拍过照（按下快门即置 true）。用于空相册引导光晕：第一次拍照后不再显示，且不依赖相册里是否还有照片。 */
+    private val _hasTakenPhoto = MutableStateFlow(false)
+    val hasTakenPhoto: StateFlow<Boolean> = _hasTakenPhoto.asStateFlow()
     private val _flashMode = MutableStateFlow(FlashMode.AUTO)
     val flashMode: StateFlow<FlashMode> = _flashMode.asStateFlow()
     private val _isBackCamera = MutableStateFlow(true)
@@ -369,6 +372,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun takePhoto() {
         val file = PhotoStorage.generateFile(getApplication())
         val eff = effective
+        _hasTakenPhoto.value = true   // 第一次按下快门后，空相册引导光晕不再显示
         // 在 CameraX 抓取前立即闪白（用 tryEmit 不挂起）：给用户最快反馈
         _shutterFlash.tryEmit(Unit)
         imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),

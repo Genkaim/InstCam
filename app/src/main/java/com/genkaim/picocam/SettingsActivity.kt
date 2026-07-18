@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -63,8 +64,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.genkaim.picocam.R
 import com.genkaim.picocam.dynamic.AnimConfig
 import com.genkaim.picocam.dynamic.AnimPrefs.saveAnimSettings
 import com.genkaim.picocam.dynamic.AppPrefs
@@ -210,13 +213,13 @@ private fun SettingsContent(onBack: () -> Unit) {
                 SettingRow("反馈与Bug提交", "帮助我们改进产品", topCorners = true, isDark = isDark) {
                     openLink(context, FEEDBACK_URL)
                 }
-                // 查看最新版本：点击提示当前版本号（中间小圆角 4dp，与上下卡片的拼接边一致）
+                // 查看最新版本：点击打开 GitHub releases 页面
                 SettingRow("查看最新版本", "当前版本 V$versionName", middleCorners = true, isDark = isDark) {
-                    Toast.makeText(context, "当前版本 V$versionName", Toast.LENGTH_SHORT).show()
+                    openLink(context, RELEASES_URL)
                 }
                 // 打赏作者：底部大圆角
                 SettingRow("打赏作者（B站发电）", "如果喜欢 InstCam，可以请作者喝杯咖啡", bottomCorners = true, isDark = isDark) {
-                    // 预留打赏链接（待用户提供）
+                    openLink(context, REWARD_URL)
                 }
             }
 
@@ -226,17 +229,19 @@ private fun SettingsContent(onBack: () -> Unit) {
             // —— 第五组：Developer ——
             GroupTitle("Developer", isDark)
             Spacer(Modifier.height(10.dp))
-            // 每个元素去掉背景颜色；头像均预留，待用户提供图片
+            // 每个元素去掉背景颜色；头像使用真实图片
             // Genkaim + GitHub 单独一行
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
+                Image(
+                    painter = painterResource(R.drawable.avatar_genkaim),
+                    contentDescription = "Genkaim",
                     modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(onSurfaceSoft(isDark).copy(alpha = 0.25f)),
+                        .size(48.dp)
+                        .clip(CircleShape),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 )
                 Spacer(Modifier.width(16.dp))
                 Text("Genkaim", style = MaterialTheme.typography.bodyLarge, color = onSurface(isDark), modifier = Modifier.align(Alignment.CenterVertically).weight(1f))
@@ -260,11 +265,13 @@ private fun SettingsContent(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
+                Image(
+                    painter = painterResource(R.drawable.avatar_zczzzzz),
+                    contentDescription = "zczzzzz",
                     modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(onSurfaceSoft(isDark).copy(alpha = 0.25f)),
+                        .size(48.dp)
+                        .clip(CircleShape),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 )
                 Spacer(Modifier.width(16.dp))
                 Text("zczzzzz", style = MaterialTheme.typography.bodyLarge, color = onSurface(isDark), modifier = Modifier.align(Alignment.CenterVertically).weight(1f))
@@ -493,8 +500,10 @@ private fun ThemeColorRow(
 }
 
 // 预留链接（待用户提供）
-private const val GITHUB_URL = ""
-private const val FEEDBACK_URL = ""
+private const val GITHUB_URL = "https://github.com/Genkaim"
+private const val FEEDBACK_URL = "https://github.com/Genkaim/InstCam/issues"
+private const val RELEASES_URL = "https://github.com/Genkaim/InstCam/releases"
+private const val REWARD_URL = "https://space.bilibili.com/479907494"
 
 // GitHub mark 路径（viewBox 24x24），用于绘制 logo 占位
 private const val GITHUB_PATH = "M12 1.5C6.2 1.5 1.5 6.2 1.5 12c0 4.65 3.01 8.59 7.2 9.99.53.1.72-.23.72-.5v-1.75c-2.93.64-3.55-1.41-3.55-1.41-.48-1.22-1.17-1.55-1.17-1.55-.96-.65.07-.64.07-.64 1.06.08 1.62 1.09 1.62 1.09.94 1.61 2.47 1.15 3.07.88.1-.68.37-1.15.67-1.41-2.34-.27-4.8-1.17-4.8-5.2 0-1.15.41-2.09 1.08-2.83-.11-.27-.47-1.34.1-2.79 0 0 .88-.28 2.88 1.08a9.9 9.9 0 0 1 5.24 0c2-1.36 2.88-1.08 2.88-1.08.57 1.45.21 2.52.1 2.79.67.74 1.08 1.68 1.08 2.83 0 4.04-2.46 4.93-4.81 5.19.38.33.71.97.71 1.96v2.9c0 .28.19.61.73.5A10.51 10.51 0 0 0 22.5 12C22.5 6.2 17.8 1.5 12 1.5z"
