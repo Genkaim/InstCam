@@ -404,7 +404,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
             // 焦段/手动参数可正常应用。视觉上：折叠态边框 = 厚度 = 岛高，恰好覆盖整张岛 → 呈现纯黑灵动岛外观，
             // 所以 p ≈ 0 时不需要再 alpha=0（否则连岛本身也看不到了）。
             ViewfinderFrame(
-                controller = vm.controller,
+                preview = vm.preview,
+                bindCameraUseCases = vm::bindCameraUseCases,
                 flashAlpha = if (transitionFile == null) flashAlpha.value else 0f,
                 eff = vm.effective,
                 cornerDp = fCorner,

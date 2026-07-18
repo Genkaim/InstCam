@@ -9,10 +9,14 @@ import android.util.Range
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.view.LifecycleCameraController
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.lifecycle.LifecycleOwner
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -63,7 +67,58 @@ private const val ALBUM_FIRST_PAGE = 60
 enum class TintState { NONE, WARM, COOL }
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
-    val controller = LifecycleCameraController(application)
+    // —— 相机绑定（用 ProcessCameraProvider 直接绑定 use case，强制 4:3 比例）——
+    // 之前用 LifecycleCameraController，但它的 setPreviewResolutionSelector / setTargetAspectRatio
+    // 都被默认「屏幕分辨率」覆盖（CameraController 官方文档明确说明：preview size 默认为屏幕分辨率或 1080p），
+    // 导致预览用 9:20 缓冲、FILL_CENTER 裁切后比 4:3 成片窄 ~2.8×，预览异常放大。
+    // 改用 ProcessCameraProvider + 自定义 Preview/ImageCapture（.setTargetAspectRatio(4:3)），
+    // setTargetAspectRatio 是 use case 上的硬约束，不会被默认覆盖。
+    val preview: Preview = Preview.Builder()
+        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+        .build()
+    val imageCapture: ImageCapture = ImageCapture.Builder()
+        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+        .build()
+    private val cameraProviderFuture = ProcessCameraProvider.getInstance(application)
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var boundCamera: Camera? = null
+    private var lifecycleOwner: LifecycleOwner? = null
+    private var cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+    /** 闪光灯模式（forward 到 imageCapture.flashMode，每次 rebind 后需重设）。 */
+    var imageCaptureFlashMode: Int = ImageCapture.FLASH_MODE_AUTO
+        set(value) {
+            field = value
+            imageCapture.flashMode = value
+        }
+
+    /**
+     * ViewfinderFrame 的 AndroidView factory 创建 PreviewView 后回调此方法：
+     * 把 PreviewView 的 surfaceProvider 接到 preview 上（已在 factory 块完成），
+     * 并绑 use case 到 lifecycle。cameraProvider 异步初始化：若还没就绪，缓存请求并在就绪后立即绑定。
+     */
+    fun bindCameraUseCases(owner: LifecycleOwner) {
+        lifecycleOwner = owner
+        val provider = cameraProvider
+        if (provider != null) {
+            doBind()
+        } else {
+            cameraProviderFuture.addListener({
+                cameraProvider = cameraProviderFuture.get()
+                doBind()
+            }, androidx.core.content.ContextCompat.getMainExecutor(getApplication()))
+        }
+    }
+
+    private fun doBind() {
+        val provider = cameraProvider ?: return
+        val owner = lifecycleOwner ?: return
+        provider.unbindAll()
+        boundCamera = provider.bindToLifecycle(owner, cameraSelector, preview, imageCapture)
+        // 重新应用 flash 模式 + 焦段（bindToLifecycle 会重置）
+        imageCapture.flashMode = imageCaptureFlashMode
+        boundCamera?.cameraControl?.setZoomRatio(_zoomLevel.value)
+    }
 
     private val _photos = MutableStateFlow<List<File>>(emptyList())
     val photos: StateFlow<List<File>> = _photos.asStateFlow()
@@ -239,7 +294,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
-        controller.imageCaptureFlashMode = ImageCapture.FLASH_MODE_AUTO
+        // 4:3 强制约束已在类初始化时通过 .setTargetAspectRatio(AspectRatio.RATIO_4_3) 应用到 preview 和 imageCapture use case。
+        imageCaptureFlashMode = ImageCapture.FLASH_MODE_AUTO
         refreshPhotos()
         // —— DataStore 加载/保存 —— 启动时一次性读盘恢复（不重置，仅"还原"按钮才重置）；
         // 之后用 snapshotFlow + debounce(500ms) 监听 filters/selectedFilter 变化批量写盘，
@@ -315,7 +371,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         val eff = effective
         // 在 CameraX 抓取前立即闪白（用 tryEmit 不挂起）：给用户最快反馈
         _shutterFlash.tryEmit(Unit)
-        controller.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
+        imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val loc = lastLocation
@@ -353,15 +409,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun toggleFlash() {
         val next = when (_flashMode.value) { FlashMode.AUTO -> FlashMode.ON; FlashMode.ON -> FlashMode.OFF; FlashMode.OFF -> FlashMode.AUTO }
         _flashMode.value = next
-        controller.imageCaptureFlashMode = when (next) { FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO; FlashMode.ON -> ImageCapture.FLASH_MODE_ON; FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF }
+        imageCaptureFlashMode = when (next) { FlashMode.AUTO -> ImageCapture.FLASH_MODE_AUTO; FlashMode.ON -> ImageCapture.FLASH_MODE_ON; FlashMode.OFF -> ImageCapture.FLASH_MODE_OFF }
     }
     fun switchCamera() {
         _isBackCamera.value = !_isBackCamera.value
-        controller.cameraSelector = if (_isBackCamera.value) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+        cameraSelector = if (_isBackCamera.value) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+        doBind()
     }
-    fun setZoom(level: Float) { _zoomLevel.value = level; controller.setZoomRatio(level) }
+    fun setZoom(level: Float) { _zoomLevel.value = level; boundCamera?.cameraControl?.setZoomRatio(level) }
     /** 从相册详情返回后重新应用焦段（controller 可能被 lifecycle 重置） */
-    fun restoreZoom() { controller.setZoomRatio(_zoomLevel.value) }
+    fun restoreZoom() { boundCamera?.cameraControl?.setZoomRatio(_zoomLevel.value) }
 
     // —— 手动相机参数控制 ——
 
@@ -370,7 +427,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun onPreviewStreaming() {
         targetFps = 30
         pushCameraOptions()  // 先设 FPS/AF/AE（内部 clearCaptureRequestOptions 可能清掉 zoom）
-        controller.setZoomRatio(_zoomLevel.value)   // 之后还原焦段——确保 zoom 不被 clearCaptureRequestOptions 清掉
+        boundCamera?.cameraControl?.setZoomRatio(_zoomLevel.value)   // 之后还原焦段——确保 zoom 不被 clearCaptureRequestOptions 清掉
     }
 
     fun updateFocusFraction(f: Float) { focusFraction = f.coerceIn(0f, 1f); pushCameraOptions() }
@@ -380,8 +437,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      * 所有相机参数设置都走这里，避免多次 setCaptureRequestOptions 互相覆盖（旧 API 为整体替换）。 */
     fun pushCameraOptions() {
         try {
-            val cameraControl = controller.cameraControl ?: return
-            val cameraInfo = controller.cameraInfo ?: return
+            val cameraControl = boundCamera?.cameraControl ?: return
+            val cameraInfo = boundCamera?.cameraInfo ?: return
             val c2 = Camera2CameraControl.from(cameraControl)
             val info = Camera2CameraInfo.from(cameraInfo)
             val minFocus = info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f

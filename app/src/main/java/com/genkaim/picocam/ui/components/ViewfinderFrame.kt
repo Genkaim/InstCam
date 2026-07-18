@@ -1,7 +1,7 @@
 package com.genkaim.picocam.ui.components
 
 import android.os.Build
-import androidx.camera.view.LifecycleCameraController
+import androidx.camera.core.Preview
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -31,7 +31,8 @@ import com.genkaim.picocam.camera.buildFilterColorMatrix
 
 @Composable
 fun ViewfinderFrame(
-    controller: LifecycleCameraController,
+    preview: Preview,
+    bindCameraUseCases: (androidx.lifecycle.LifecycleOwner) -> Unit,
     flashAlpha: Float,
     eff: EffectiveFilter = EffectiveFilter(),
     cornerDp: Float = 48f,
@@ -84,10 +85,13 @@ fun ViewfinderFrame(
         AndroidView(
             factory = { ctx ->
                 PreviewView(ctx).apply {
-                    scaleType = PreviewView.ScaleType.FIT_CENTER  // 完整显示预览（不裁切），倍率与拍照一致；拍照后 1:1 中心裁切
+                    // FILL_CENTER：把 4:3 预览中心裁切成正方形，与 addPolaroidFrame 的 1:1 中心裁切一致（WYSIWYG）。
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                    this.controller = controller
-                    controller.bindToLifecycle(lifecycleOwner)
+                    // 把 PreviewView 的 surfaceProvider 接到 Preview use case，
+                    // 然后由 VM 把 preview + imageCapture 绑到 lifecycle（强制 4:3 硬约束）。
+                    preview.setSurfaceProvider(this.surfaceProvider)
+                    bindCameraUseCases(lifecycleOwner)
                     // 限制取景框帧率：相机出流(STREAMING)后回调 VM，由 VM 统一把 FPS + 对焦 + 快门
                     // 合并应用到 Camera2CameraControl（避免多次 setCaptureRequestOptions 互相覆盖）。
                     // 切摄像头/重新绑定时流会重新 STREAMING，观察者会再次触发，确保新相机同样限帧并套用当前手动参数。
@@ -98,6 +102,9 @@ fun ViewfinderFrame(
                     }
                 }
             },
+            // PreviewView 必须始终 fillMaxSize：其尺寸一旦变化（如按比例内缩），
+            // FILL_CENTER 会按新尺寸重新计算缩放 → 二次裁切 → 预览异常放大（尤其在展开动画中每帧重算）。
+            // 黑边由上方 draw 层 border 覆盖绘制，不占布局空间，保证 PreviewView 尺寸恒定 = WYSIWYG。
             modifier = Modifier.fillMaxSize(),
             update = { previewView.value = it },
         )
