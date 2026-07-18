@@ -260,11 +260,15 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 animating = true
                 effectsExpanded = false   // 拍照播放动画时隐藏效果区（若仍展开）
             if (!anim.animEnabled) {
-                // 无动画：CameraViewModel 拍照后立即把 file 加入 _photos（带占位 cell，视觉与 GridPhotoCard 一致），
+                // 无动画：CameraViewModel 拍照后把 file 加入 _photos（带占位 cell，视觉与 GridPhotoCard 一致），
                 // 避免相册从"空状态"突然变到有照片的视觉跳变。addPolaroidFrame 完成后通过 _photoProcessing = false
                 // 通知 UI 端：清占位（GridPhotoCard 走 else 分支，新组合项 fileRatio 第一次读到完整文件 → 正确比例）、
                 // 释放 animating。clearPlaceholder 必须在 photoProcessing 变 false **之后**（保证 addPolaroidFrame 完成、
                 // 文件已带白框），否则 GridPhotoCard 第一次渲染会读到残缺文件。
+                // 关键：takePhoto.onImageSaved 不再更新 _photos（相册在 showDetail=true 之前冻结），
+                // 这里需要主动调 refreshPhotosSync 更新 _photos + setPlaceholder 设置占位
+                vm.setPlaceholder(file)
+                vm.refreshPhotosSync()
                 scope.launch {
                     while (vm.photoProcessing.value) {
                         delay(30)
@@ -361,6 +365,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     val screenH = configuration.screenHeightDp.toFloat()
     val screenW = configuration.screenWidthDp.toFloat()
     val halfH = screenH / 2f
+    val vfW = vfConfig.widthDp.toFloat()
     val maxOffset = (halfH - vfConfig.widthDp).coerceAtLeast(0f)
     val vfTop = (halfH / 2f + (vfConfig.posY - 0.5f) * maxOffset - vfConfig.widthDp.toFloat() / 2f).coerceAtLeast(0f)
     val vfCenterX = screenW / 2f
@@ -487,6 +492,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 SlideHintIcon(color = onSurfaceSoft(isDark))
                                 Text(" 图标的区域左右滑动可以调节参数", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
                             }
+                            // 长按提示：拍下首张照片后，长按照片即可进入批量编辑模式（多选删除/分享）
+                            Text("长按照片可以批量编辑", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
                         }
                     }
                 } else {
@@ -574,12 +581,14 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 ) {
                     Box(Modifier.fillMaxSize()) {
                         // 悬浮底部胶囊（抬高到底部 40dp），点击"取消"退出多选
+                        // 浅色模式用 desaturated RetroPaper（0xFFEAE3D5）：保留暖色调但降低饱和度，
+                        // 与相册背景 Color(0xFFF0EDE6) 形成柔和但清晰的对比，不抢视觉焦点；深色模式保持 surfaceCard
                         Row(
                             Modifier
                                 .align(Alignment.BottomCenter)
                                 .padding(bottom = 40.dp)
                                 .clip(RoundedCornerShape(28.dp))
-                                .background(surfaceCard(isDark))
+                                .background(if (isDark) surfaceCard(isDark) else Color(0xFFEAE3D5))
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -589,17 +598,25 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                             Spacer(Modifier.width(16.dp))
                             Text("已选 ${selectedPhotos.size}", color = onSurfaceSoft(isDark), style = MaterialTheme.typography.labelMedium)
                             Spacer(Modifier.width(8.dp))
-                            // 全选按钮：点全选选中所有，再点取消全选
+                            // 全选按钮：固定宽度 Box 居中文字，避免"全选"↔"取消全选"切换时按钮宽度变化导致整行重排
                             val allSelected = photos.isNotEmpty() && selectedPhotos.size == photos.size
-                            Text(
-                                if (allSelected) "取消全选" else "全选",
-                                color = onSurfaceSoft(isDark),
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.clickable {
-                                    if (allSelected) selectedPhotos.clear()
-                                    else { selectedPhotos.clear(); selectedPhotos.addAll(photos) }
-                                },
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(72.dp)
+                                    .height(36.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable {
+                                        if (allSelected) selectedPhotos.clear()
+                                        else { selectedPhotos.clear(); selectedPhotos.addAll(photos) }
+                                    },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    if (allSelected) "取消全选" else "全选",
+                                    color = onSurfaceSoft(isDark),
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
                             Spacer(Modifier.width(8.dp))
                             // 分享胶囊（复用相册详情风格）
                             Box(
@@ -642,8 +659,11 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 }   // 关闭 else (空相册 / 有相册)
 
         }   // 关闭 weight(1f) Box
+        }   // 关闭 Column（相机内容）
 
-        // 拍照后过渡动画：取景框 → 灵动岛 → 打印 → 放大 → 本页详情（内部用照片做模糊背景 + 照片下方三按钮）
+        // 拍照后过渡动画：取景框 → 灵动岛 → 打印 → 放大 → 本页详情。
+        // 关键：放在 Column 外面（Box outermost 内），不受 Column 布局/weight 分配影响。
+        // 这样过渡 overlay 自己 fillMaxSize 覆盖整个屏幕，不被 Column 内的 Box(weight) 测量/约束干扰。
         if (transitionFile != null) {
             CaptureTransitionOverlay(
                 file = transitionFile!!,
@@ -654,8 +674,11 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 photoVersion = photoVersion,
                 onDetailState = { },
                 onAddToAlbum = {
-                    // 预览结束后（用户点击关闭时）才调用：同步刷新相册 + 设置占位
-                    albumSlot = null  // 重置，强制 close() 等待新布局测量（progressState 可能已变）
+                    // 关键：不要重置 albumSlot = null
+                    // 原因：拍照后 _photos 立即包含新文件，albumSlot 已经在 grow 期间被占位 cell onGloballyPositioned 测量。
+                    // 如果这里重置 albumSlot，refreshPhotosSync 后 _photos 内容未变（StateFlow equals 不通知），
+                    // LazyVerticalGrid 不重组 → 占位 cell 不重新布局 → onGloballyPositioned 不触发 → albumSlot 永远为 null
+                    // → close() 飞入动画的 flySlot 始终为 null → 飞入动画不播放。
                     vm.setPlaceholder(transitionFile!!)
                     vm.refreshPhotosSync()
                     // 预加载缩略图到 Coil 内存缓存，使 clearPlaceholder 后 GridPhotoCard 直接命中缓存无闪烁
@@ -690,7 +713,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
             )
         }
 
-        // 多选删除二次确认（适配深色模式）
+        // 多选删除二次确认（适配深色模式）。同样放在 Column 外面，避免被 Column 内容遮挡。
         if (showDeleteConfirm) {
             AlertDialog(
                 onDismissRequest = { showDeleteConfirm = false },
@@ -710,7 +733,6 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 },
             )
         }
-        }   // 关闭 Column（相机内容）
     }   // 关闭 Box outermost
 }   // 关闭 CameraContent
 

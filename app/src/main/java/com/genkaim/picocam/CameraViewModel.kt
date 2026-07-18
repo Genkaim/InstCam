@@ -313,25 +313,21 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val loc = lastLocation
                     lastLocation = null
-                    // 拍照后立即让相册"看到"新文件：占位 cell 形式（视觉与 GridPhotoCard 一致：卡片色 + 边框 + 透明图片），
-                    // 避免相册从"空状态"突然变到有 1 张照片的视觉跳变（用户感知为"闪烁"）。
-                    // 同步设置：保证 emit 触发 UI collect 时 placeholder 已就位。
-                    setPlaceholder(file)
+                    // 关键：不在这里 setPlaceholder，也不立即更新 _photos。
+                    // 用户期望"拍完照之后应该是没有任何动作"——相册在 showDetail=true 之前完全不变。
+                    // _photos 更新延后到 onAddToAlbum（showDetail=true 后）通过 refreshPhotosSync 触发。
+                    // 也不立即更新 _photoVersion(T1)——T1 的 photoVersion 变化会让 LaunchedEffect 的 while
+                    // 提前退出（不等 addPolaroidFrame 完成就 showPhoto=true），可能导致读到原图（无白框）。
                     _photoProcessing.value = true
                     // 立即发射：UI 端进入过渡动画（或无动画处理流程）
                     viewModelScope.launch { _photoCaptured.emit(file) }
                     viewModelScope.launch {
-                        // 1) 立即 listPhotos 把新文件加入 _photos（file 已经在 listPhotos 中），并更新 _photoVersion(T1) 触发 fileRatio 重算
-                        val list = withContext(Dispatchers.IO) {
-                            PhotoStorage.listPhotos(getApplication())
-                        }
-                        _photos.value = list
-                        _photoVersion.value = System.currentTimeMillis()
-                        // 2) addPolaroidFrame 完成后更新 _photoVersion(T2) → fileRatio 重算读到带白框版本
-                        //    注意：clearPlaceholder 时机由 UI 端控制（避免与带动画 close() 流程冲突）
+                        // 直接做 addPolaroidFrame，_photos 由 onAddToAlbum.refreshPhotosSync 触发更新
                         withContext(Dispatchers.IO) {
                             PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff)
                         }
+                        // T2: addPolaroidFrame 完成 → photoVersion 变化 → LaunchedEffect 的 while 退出 → showPhoto=true
+                        //    → AsyncImage 读到带白框版本
                         _photoVersion.value = System.currentTimeMillis()
                         _photoProcessing.value = false
                     }

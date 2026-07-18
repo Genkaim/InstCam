@@ -81,7 +81,9 @@ import com.genkaim.picocam.dynamic.DynamicIslandConfig
 import com.genkaim.picocam.dynamic.ViewfinderConfig
 import com.genkaim.picocam.ui.theme.RetroBrown
 import com.genkaim.picocam.ui.theme.RetroCream
+import com.genkaim.picocam.ui.theme.RetroDarkBg
 import com.genkaim.picocam.ui.theme.RetroDarkSurface
+import com.genkaim.picocam.ui.theme.RetroPaper
 import com.genkaim.picocam.ui.theme.RetroRust
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -223,8 +225,7 @@ fun CaptureTransitionOverlay(
     val fromLeft = (screenW - fromW) / 2f
     val halfH = screenH / 2f
     val maxOffset = (halfH - vfConfig.widthDp).coerceAtLeast(0f)
-    // 取景框顶：posY 是垂直中心占比，posY*screenH = 中心 dp，减去半高 = 顶 dp
-    val fromTop = (vfConfig.posY * screenH - fromH / 2f).coerceAtLeast(0f)
+    val fromTop = (halfH / 2f + (vfConfig.posY - 0.5f) * maxOffset - fromH / 2f).coerceAtLeast(0f)
     val fromCorner = vfConfig.cornerDp.toFloat()
 
     // —— 灵动岛（设置态/正常折叠态）：宽度/高度/圆角/位置均按设置（diConfig）——
@@ -272,7 +273,13 @@ fun CaptureTransitionOverlay(
         emit.animateTo(1f, tween(durationMillis = 1700, easing = PrinterEasing))  // ⑤ 打印
         showDetail = true                                                         // ⑥ 背景进入模糊/预览模式
         onDetailState(true)
-        grow.animateTo(1f, tween(durationMillis = 450))                         // ⑦ 照片放大
+        grow.animateTo(1f, tween(durationMillis = 450))                         // ⑦ 照片放大（开始过渡到正中央）
+        // ★ 占位时机：grow 完成（照片完全过渡到正中央）后调用 onAddToAlbum
+        // 时机原因：打印动画（emit）期间相册冻结；照片刚开始放大时相册也冻结；
+        // 只有照片完全到达中央后才让相册看到新文件 + 占位 cell（用户此时已被 overlay 遮挡，看不到相册变化）。
+        // 这样相册从"冻结→突然看到占位"的视觉冲击最小（发生在用户视觉焦点从相册转移到照片之后）。
+        onAddToAlbum()
+        addedToAlbum = true
         shrink.animateTo(1f, tween(durationMillis = 320))                        // ⑧ 加长版岛过渡回正常长度
         // ⑨ 自动展开取景框在 close() 中飞入动画完成后触发（progressState 全程不变）
     }
@@ -302,7 +309,7 @@ fun CaptureTransitionOverlay(
     }
     val shellTop = lerp(fromTop, isTop, m)
     val shellCorner = lerp(fromCorner, isCorner, m)
-    val shellAlpha = if (e < 1f) 1f else (1f - g)
+    val shellAlpha = if (closing) 1f else if (e < 1f) 1f else (1f - g)
     // 出纸口（纸张露出位置）占岛高比例：仅决定 clip 裁切线位置；灵动岛外壳始终是完整圆角矩形，不随出纸口拆分
     val seamFrac = 0.9f
     val seamYdp = shellTop + shellH * seamFrac
@@ -339,11 +346,13 @@ fun CaptureTransitionOverlay(
     val btnDelIcon = if (isDark) Color.White else RetroRust
     // 莫奈取色背景：从照片提取主色并去色（降低饱和度），详情态作为背景，90% 不透明度。
     // 解码在 IO 线程完成（见 extractDominantColor），animateColorAsState 平滑过渡避免原色瞬切。
-    val darkFallback = 0xFF242424.toInt()
-    var bgColorTarget by remember { mutableIntStateOf(if (isDark) darkFallback else AppBgColor.toArgb()) }
-    LaunchedEffect(file) { bgColorTarget = extractDominantColor(file, if (isDark) darkFallback else AppBgColor.toArgb()) }
+    val darkFallback = RetroDarkBg.toArgb()
+    // 与 PhotoViewerActivity 保持一致：fallback 统一为 RetroPaper（暖黄牛皮纸色），
+    // 不论浅色/深色（深色模式最终 bg 用 darkBase，不受 bgColorTarget 影响）
+    var bgColorTarget by remember { mutableIntStateOf(RetroPaper.toArgb()) }
+    LaunchedEffect(file) { bgColorTarget = extractDominantColor(file, RetroPaper.toArgb()) }
     val monetColor by animateColorAsState(
-        targetValue = Color(desaturate(bgColorTarget, 0.55f)),
+        targetValue = Color(bgColorTarget),
         animationSpec = tween(durationMillis = 400, easing = LinearEasing),
         label = "monetBg",
     )
@@ -352,12 +361,18 @@ fun CaptureTransitionOverlay(
     // 按钮行高度（px）：56 按钮 + 16 下边距
     val btnRowHpx = (56 + 16) * densityPx
 
-    Box(Modifier.fillMaxSize().background(Color.Transparent).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }) {
+    Box(Modifier.fillMaxSize()
+        .background(Color.Transparent)  // 保持透明：过渡期间相册透出可见（showDetail=true 时 scrim 内部会铺 bgColor 遮挡相册）
+        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }) {
         // 模糊背景层：用刚拍的照片做模糊源，scrim 之前（视觉最下面）。
         // graphicsLayer { renderEffect = BlurEffect(35px, 35px, TileMode.Decal) } 只模糊本层（不影响兄弟节点
-        // —— 照片、按钮仍清晰）。showDetail 为 true 时才出现，scrim 半透明覆盖其上 → 模糊 = 背景颜色合成一层。
-        // 模糊半径 35px 与之前相机内容层模糊保持一致。
-        if (showDetail) {
+        // —— 照片、按钮仍清晰）。用 AnimatedVisibility 包裹，与 scrim 同步淡入/淡出（400ms 让动画更明显可见）。
+        // 模糊层 fillMaxSize 占满整个屏幕。
+        AnimatedVisibility(
+            visible = showDetail,
+            enter = fadeIn(tween(400)),
+            exit = fadeOut(tween(400)),
+        ) {
             AsyncImage(
                 model = remember(file, photoVersion) {
                     ImageRequest.Builder(context)
@@ -375,22 +390,26 @@ fun CaptureTransitionOverlay(
         }
 
         // 半透明遮罩（scrim）；点击背景处关闭
+        // 取色逻辑与 PhotoViewerActivity 完全一致（同函数 + 同 RetroPaper fallback + getLightMutedColor）。
+        // 浅色模式：背景 = monetColor.copy(alpha = 0.9f)，与详情页相同取色但 90% 不透明（用户要求）
+        // 深色模式：底色为深灰（RetroDarkBg），叠莫奈色淡显 + 灰遮罩 → 与详情页 dark 模式结构一致
         AnimatedVisibility(
             visible = showDetail,
-            enter = fadeIn(tween(250)),
-            exit = fadeOut(tween(250)),
+            enter = fadeIn(tween(400)),
+            exit = fadeOut(tween(400)),
         ) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(scrimColor)
+                    .background(if (isDark) Color(0xFF242424) else monetColor.copy(alpha = 0.9f))
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() },
             ) {
                 if (isDark) {
-                    // 莫奈取色在深色下淡显，再叠半透明灰色遮罩，使背景整体呈深灰而非刺眼原色
+                    // 深色：与 PhotoViewerActivity 完全一致——底色 RetroDarkBg + 莫奈色淡显 + 灰遮罩（移除多余的 scrimColor 层）
                     Box(Modifier.fillMaxSize().background(monetColor.copy(alpha = 0.4f)))
                     Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A).copy(alpha = 0.6f)))
                 }
+                // 浅色：底色已经是莫奈 0.9，不再叠任何层（避免被稀释）
             }
         }
 
@@ -469,7 +488,8 @@ fun CaptureTransitionOverlay(
 
         // 顶部常驻灵动岛（详情态）：仅在 grow 进行中/完成后渲染（g>0），杜绝 morph/extend/emit 期间可见。
         // grow 期间随 g 在"加长版"打印位置淡入（与打印机机身岛无缝衔接），随后 shrink(0→1) 把宽度过渡回设置正常长度(isW)。
-        if (g > 0.001f) {
+        // closing 时也立即隐藏（否则 close() 期间屏幕顶部仍显示黑色小岛直到 overlay 卸载）。
+        if (g > 0.001f && !closing) {
             val piW = lerp(pillW, isW, s)
             val piH = isH
             val piLeft = lerp(pillLeft, isLeft, s)
@@ -614,6 +634,7 @@ private suspend fun extractDominantColor(file: File, fallback: Int): Int = withC
         val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
         val palette = Palette.from(bm).generate()
         bm.recycle()
+        // 与 PhotoViewerActivity.extractDominantColor 保持一致：getLightMutedColor(fallback)
         palette.getLightMutedColor(fallback)
     } catch (_: Exception) { fallback }
 }
