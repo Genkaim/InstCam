@@ -257,11 +257,30 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
         }
     }
 
+    // 取景框→灵动岛 morph 立即在快门按下时启动（captureStarted 在 CameraX 抓取前发射，
+    // 与按下快门对齐，不受机型拍照延迟影响）。仅动画路径在此处理；无动画路径留给 photoCaptured。
+    LaunchedEffect(Unit) {
+        vm.captureStarted.collect { file ->
+            if (animating) return@collect
+            animating = true
+            effectsExpanded = false   // 拍照播放动画时隐藏效果区（若仍展开）
+            if (anim.animEnabled) {
+                // 先把取景框快照到展开态，使过渡 overlay 的 morph 从展开态→灵动岛 视觉正确
+                progressState.floatValue = 1f
+                transitionFile = file
+                // 同时后台逐步把 progressState 收回到 0，过渡结束时取景框已是折叠态
+                scope.launch {
+                    animate(progressState.floatValue, 0f, animationSpec = tween(durationMillis = 380)) { v, _ ->
+                        progressState.floatValue = v
+                    }
+                }
+            }
+            // 无动画路径不在此启动占位逻辑（animating 已置 true，待 photoCaptured 释放）
+        }
+    }
+
     LaunchedEffect(Unit) {
         vm.photoCaptured.collect { file ->
-            if (!animating) {
-                animating = true
-                effectsExpanded = false   // 拍照播放动画时隐藏效果区（若仍展开）
             if (!anim.animEnabled) {
                 // 无动画：CameraViewModel 拍照后把 file 加入 _photos（带占位 cell，视觉与 GridPhotoCard 一致），
                 // 避免相册从"空状态"突然变到有照片的视觉跳变。addPolaroidFrame 完成后通过 _photoProcessing = false
@@ -270,6 +289,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 // 文件已带白框），否则 GridPhotoCard 第一次渲染会读到残缺文件。
                 // 关键：takePhoto.onImageSaved 不再更新 _photos（相册在 showDetail=true 之前冻结），
                 // 这里需要主动调 refreshPhotosSync 更新 _photos + setPlaceholder 设置占位
+                // （animating 已由 captureStarted 置 true，此处不重复置；release 在此块的协程末尾）
                 vm.setPlaceholder(file)
                 vm.refreshPhotosSync()
                 scope.launch {
@@ -281,16 +301,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 }
                 return@collect
             }
-                // 先把取景框快照到展开态，使过渡 overlay 的 morph 从展开态→灵动岛 视觉正确
-                progressState.floatValue = 1f
-                transitionFile = file
-                // 同时后台逐步把 progressState 收回到 0，过渡结束时取景框已是折叠态
-                scope.launch {
-                    animate(progressState.floatValue, 0f, animationSpec = tween(durationMillis = 380)) { v, _ ->
-                        progressState.floatValue = v
-                    }
-                }
-            }
+            // 动画路径：morph 已随 captureStarted 立即启动，照片内容就绪由 overlay 内部 photoVersion 控制，
+            // 这里无需再处理 animating（overlay 结束关闭时由 close()/onExit 触发相册，animating 在其它路径释放）
         }
     }
 
@@ -428,7 +440,12 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         .graphicsLayer { alpha = glowVisible * breatheA }
                         .background(
                             Brush.radialGradient(
-                                colors = listOf(
+                                colors = if (isDark) listOf(
+                                    Color(0xFF9C7FC8).copy(alpha = 0.20f),   // 紫（核心，深色模式调亮一档）
+                                    Color(0xFF7B5FA8).copy(alpha = 0.14f),   // 深紫
+                                    Color(0xFF5C4280).copy(alpha = 0.08f),   // 暗紫
+                                    Color.Transparent,
+                                ) else listOf(
                                     Color(0xFFF2F7FF).copy(alpha = 0.72f),   // 极浅蓝白（核心）
                                     Color(0xFFDCE9FF).copy(alpha = 0.52f),   // 浅蓝
                                     Color(0xFFBDD0F5).copy(alpha = 0.28f),   // 中蓝
@@ -448,7 +465,12 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         .graphicsLayer { alpha = glowVisible * breatheB }
                         .background(
                             Brush.radialGradient(
-                                colors = listOf(
+                                colors = if (isDark) listOf(
+                                    Color(0xFF8C70C0).copy(alpha = 0.12f),   // 紫（暗色模式调亮一档）
+                                    Color(0xFF705AA8).copy(alpha = 0.08f),   // 深紫
+                                    Color(0xFF524080).copy(alpha = 0.05f),   // 暗紫
+                                    Color.Transparent,
+                                ) else listOf(
                                     Color(0xFFD4ECFA).copy(alpha = 0.42f),   // 浅青
                                     Color(0xFFC4D4F5).copy(alpha = 0.34f),   // 蓝
                                     Color(0xFFCCBFE8).copy(alpha = 0.20f),   // 微紫
@@ -505,13 +527,13 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         .graphicsLayer { alpha = ctrlAlpha },
                 ) {
                     // 缩放条与取景框之间的间距
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(6.dp))
                     // 缩放条
                     ZoomBar(zoomLevel = zoomLevel, isDark = isDark, onZoomChange = vm::setZoom,
                         modifier = Modifier.padding(top = 2.dp, bottom = 0.dp))
                     // 手动相机参数行：横滑调节
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         CameraParamItem(
@@ -539,7 +561,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 context.startActivity(Intent(context, SettingsActivity::class.java))
                             }, onToggleEffects = { effectsExpanded = !effectsExpanded })
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
                 }
             }
 

@@ -66,6 +66,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -174,6 +175,10 @@ fun CaptureTransitionOverlay(
     var photoLeftPx by remember { mutableStateOf(0f) }     // 照片左边 x（px），飞入动画用
     var photoWidthPx by remember { mutableStateOf(0f) }   // 照片布局宽（px），飞入缩放用
     var photoHeightPx by remember { mutableStateOf(0f) }  // 照片布局高（px），飞入用
+    // 过渡层根 Box 的【实测】像素尺寸：避免用 configuration.screenHeightDp*density 推导中心/高度，
+    // 因不同机型（导航栏/挖孔/显示缩放）下后者常≠真实窗口像素高，会导致照片打印起止位置算错（超出灵动岛/多走一段）。
+    var overlayWpx by remember { mutableStateOf(0f) }
+    var overlayHpx by remember { mutableStateOf(0f) }
 
     // 详情态时照片（及按钮）整体上移量（px）；grow 完成后照片中心不再居中而是略偏上
     val detailUpPx = 60f * densityPx
@@ -236,12 +241,22 @@ fun CaptureTransitionOverlay(
     val isCenterX = diConfig.posX * screenW
     val isCenterY = diConfig.posY * screenH
     val isLeft = isCenterX - isW / 2f
+    val isRight = isLeft + isW
     val isTop = (isCenterY - isH / 2f).coerceAtLeast(4f)
 
-    // —— 打印态（加长版）：仅【横向】变长（更宽），高度/圆角/竖向位置完全沿用设置 → 横向出纸插槽外观；
-    //    加长后【强制居中于屏幕】——即便设置里的灵动岛不在画面中央，出纸插槽也始终落在屏幕中线，
-    //    避免非对称加长导致整体偏左/偏右；打印完成后由 shrink 把宽度过渡回设置指定的正常长度(isW)。 ——
-    val pillW = screenW * 0.78f
+    // —— 打印态（加长版）：仅【横向】变长（更宽），高度/圆角/竖向位置完全沿用设置 → 横向出纸插槽外观 ——
+    // 加长后【强制居中于屏幕】：出纸插槽始终落在屏幕中线，避免非对称加长导致整体偏左/偏右；
+    // 打印完成后由 shrink 把宽度过渡回设置指定的正常长度(isW)。
+    // 加长后的"距左右屏幕边距离"取 min(a, b)：
+    //   a = 默认加长态(占屏 defaultPillFrac)距左右边的距离 = (1 - defaultPillFrac)/2 · 屏宽；
+    //   b = 正常岛(不加长)距左右边的最小值 = min(岛左距, 岛右距)；
+    //   实际加长后距左右边 = min(a, b) → 岛越贴边(b 越小)加长越宽、但永不窄于默认宽度(≥ defaultPillFrac 占比)，
+    //   岛足够居中(b ≥ a)时保持默认加长宽度。
+    val defaultPillFrac = 0.78f
+    val a = screenW * (1f - defaultPillFrac) / 2f
+    val b = min(isLeft, screenW - isRight).coerceAtLeast(0f)
+    val edgeDist = min(a, b)
+    val pillW = (screenW - 2f * edgeDist).coerceIn(isW, screenW)
     val pillLeft = (screenW - pillW) / 2f      // 加长版强制居中：extend 期间从设置岛位置滑向屏幕中线
     val pillTop = isTop                        // 高度相同 → 顶边相同
     val pillCenterY = isCenterY
@@ -264,13 +279,17 @@ fun CaptureTransitionOverlay(
         morph.animateTo(1f, tween(durationMillis = 380))                          // ① 取景框 → 设置里的灵动岛大小
         delay(200)                                                                // ② HOLD：正常灵动岛清晰可见
         extend.animateTo(1f, tween(durationMillis = 300))                         // ③ 横向变长（设置岛 → 加长版打印态）
-        // 等 addPolaroidFrame 完成（photoVersion 变化），确保读到带白框版本
+        // 等 addPolaroidFrame 完成（photoVersion 变化），确保读到带白框版本；
+        // 并 flooring 到固定最小间隔，使不同设备"加长→照片出现"的观感一致（不再随机型处理快慢而差）
+        val gapStartNs = System.nanoTime()
         var waitAttempts = 0
         while (photoVersionRef.value == initialVersion && waitAttempts < 100) {    // 最多等 5 秒
             delay(50)
             waitAttempts++
         }
-        delay(300)  // 额外等待文件写入完成
+        val waitedMs = (System.nanoTime() - gapStartNs) / 1_000_000
+        val MIN_APPEAR_GAP_MS = 300L   // 加长完成后到照片出现的最小间隔(ms)：两设备都至少等这么久 → 一致
+        if (waitedMs < MIN_APPEAR_GAP_MS) delay(MIN_APPEAR_GAP_MS - waitedMs)
         showPhoto = true                                                          // ④ addPolaroidFrame 已完成，读到带白框版本
         emit.animateTo(1f, tween(durationMillis = 1700, easing = PrinterEasing))  // ⑤ 打印
         showDetail = true                                                         // ⑥ 背景进入模糊/预览模式
@@ -317,7 +336,8 @@ fun CaptureTransitionOverlay(
     val seamYdp = shellTop + shellH * seamFrac
 
     val revealLinePx = seamYdp * densityPx
-    val screenHpx = screenH * densityPx
+    // 用实测根 Box 尺寸推导中心/高度（首帧未测得时回退 configuration 值，避免除零/跳变）
+    val screenHpx = if (overlayHpx > 0f) overlayHpx else screenH * densityPx
     val screenCenterYpx = screenHpx / 2f
     // 照片布局高度（onGloballyPositioned 测得，pre-transform）；打印态按 scalePrint 缩放后的可见高度
     val photoLaidHpx = max(photoBottomPx - screenCenterYpx, 0f) * 2f
@@ -358,6 +378,7 @@ fun CaptureTransitionOverlay(
     val btnRowHpx = (56 + 16) * densityPx
 
     Box(Modifier.fillMaxSize()
+        .onSizeChanged { overlayWpx = it.width.toFloat(); overlayHpx = it.height.toFloat() }
         .background(Color.Transparent)  // 保持透明：过渡期间相册透出可见（showDetail=true 时 scrim 内部会铺 bgColor 遮挡相册）
         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }) {
         // 模糊背景层已完全移除（用户要求：完全去除预览照片时的背景）

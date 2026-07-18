@@ -59,6 +59,9 @@ import com.genkaim.picocam.ui.theme.surfaceCard
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
+/** 内圆角下限（dp）：当 外圆角−边框厚度 < 此值时夹到此处，避免内圆角转负渲染成直角。 */
+private const val MIN_INNER_CORNER_DP = 8f
+
 /**
  * 取景框设置页：上半部分是一个取景框示意（方形，可上下拖动定位），下半部分是调整参数。
  * 记录垂直位置、宽度、圆角三个参数，供主界面取景框使用。
@@ -140,7 +143,8 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
         val framePx = with(density) { width.dp.toPx() }
         // 边框宽度取灵动岛高度（与主界面一致），并约束不超过取景框一半
         val border = diCfg.heightDp.coerceIn(0, width.roundToInt() / 2)
-        val innerCorner = (corner - border).coerceAtLeast(0f)
+        // 与 ViewfinderFrame 主界面一致：外圆角 = corner（滑块直接调外圆角）；内圆角 = max(corner-border, MIN_INNER_CORNER_DP)，过小夹下限避免成直角
+        val innerCorner = (corner - border).coerceAtLeast(MIN_INNER_CORNER_DP)
         // 示意区（上半部分）内的竖向定位：基于可用高度百分比，posY=0.5 居中，与主线一致
         val maxOffsetPx = (halfHpx - framePx).coerceAtLeast(0f)
         val offsetY = (posY - 0.5f) * maxOffsetPx

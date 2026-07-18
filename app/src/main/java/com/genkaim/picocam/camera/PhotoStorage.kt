@@ -30,6 +30,10 @@ object PhotoStorage {
      *  文件仅约 20~40KB，磁盘读取/解码开销相比 8MB 原图可忽略不计。 */
     const val THUMB_SIZE = 400
 
+    /** 加框解码目标长边（px）。原图常 4000px+，全分辨率解码最慢且最吃设备性能（不同机型时长差异主要来源）。
+     *  采样到该值已足够屏幕/详情页满屏展示，decode + 滤镜 + 编码耗时大幅下降，跨设备更一致。 */
+    private const val TARGET_EDGE_PX = 1600
+
     private fun getDir(context: Context): File =
         context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES)
             ?: File(context.filesDir, "pictures").also { it.mkdirs() }
@@ -53,7 +57,7 @@ object PhotoStorage {
                 exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
             } catch (_: Exception) { ExifInterface.ORIENTATION_NORMAL }
 
-            val src = BitmapFactory.decodeFile(file.path) ?: return@withContext file
+            val src = decodeSampled(file.path) ?: return@withContext file
 
             // 根据 EXIF 旋转原图
             val rotated = when (orientation) {
@@ -96,6 +100,8 @@ object PhotoStorage {
             FileOutputStream(file).use { out ->
                 bm.compress(Bitmap.CompressFormat.JPEG, 95, out)
             }
+            // 用内存中的 bm 直接生成缩略图（避免再次解码刚写好的文件），省一次磁盘解码、降低跨设备耗时差异
+            saveThumbnailFromBitmap(bm, thumbnailFileFor(file), THUMB_SIZE)
             bm.recycle()
 
             // 写入 EXIF：清除方向 + 写入 GPS
@@ -112,10 +118,30 @@ object PhotoStorage {
                 }
                 exif.saveAttributes()
             } catch (_: Exception) {}
-            // 同时生成缩略图：列表/缩略图条永远加载它，避免读取 8MB 原图
-            generateThumbnail(file, THUMB_SIZE)
         } catch (_: Exception) {}
         file
+    }
+
+    /** 按目标长边采样解码：避免直接解码 4000px+ 原图（最慢且最吃设备性能的步骤）。 */
+    private fun decodeSampled(path: String): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val longEdge = maxOf(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
+        var sample = 1
+        while (longEdge / sample / 2 > TARGET_EDGE_PX) sample *= 2
+        return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
+    /** 由内存 Bitmap 直接生成缩略图（长边 [size]），避免重复磁盘解码。 */
+    private fun saveThumbnailFromBitmap(src: Bitmap, thumbFile: File, size: Int) {
+        val longEdge = maxOf(src.width, src.height).coerceAtLeast(1)
+        val sample = maxOf(1, longEdge / size)
+        val w = (src.width / sample).coerceAtLeast(1)
+        val h = (src.height / sample).coerceAtLeast(1)
+        val t = Bitmap.createScaledBitmap(src, w, h, true)
+        thumbFile.parentFile?.mkdirs()
+        FileOutputStream(thumbFile).use { fos -> t.compress(Bitmap.CompressFormat.JPEG, 82, fos) }
+        t.recycle()
     }
 
     /** 给定原图文件，返回其缩略图文件（即便尚不存在也返回预期路径）。

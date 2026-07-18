@@ -90,6 +90,14 @@ import com.genkaim.picocam.ui.theme.RetroSoftRed
 /** 横滑调节映射：整钮宽的该比例对应的位移即达到满量程(0~1)，值越小手指行程越短。 */
 private const val DRAG_FULL_FRACTION = 0.7f
 
+/** 调色盘网格：点间距(GRID_SPACING_DP)与边缘留白(GRID_MARGIN_DP)恒定为设计基准，
+ *  调色盘随多屏适配缩放时按尺寸重算点数 → 点密度(间距)不变。
+ *  原点 164dp 配 11×11 点：绘制区 = 164-2*22 = 120dp，间距 = 120/(11-1) = 12dp。 */
+private val GRID_MARGIN_DP = 22.dp
+private val GRID_SPACING_DP = 12.dp
+private const val MIN_GRID_DOTS = 3
+private const val MAX_GRID_DOTS = 25
+
 @Composable
 fun EffectsPanel(
     visible: Boolean,
@@ -118,9 +126,35 @@ fun EffectsPanel(
     // 控制栏按钮外缘到屏幕边的距离（= “设置”钮左缘 / “X”钮右缘，= (屏宽-220)/6）。
     // 背景层铺满整屏，但调色盘左缘与滤镜列表右缘按此对齐，保持与上一版一致的按钮对齐
     val edgeInset = controlInset + 12.dp
-    val sliderHeight = 48.dp
-    // 调色盘方块尺寸固定（与面板高度解耦）：展开/收起时大小和位置都不变，只有右侧列表随面板伸缩
-    val squareSide = 164.dp
+    // 面板可用高度（上下约束基准）：EffectsPanel 为 fillMaxSize 铺在相册 weight 区，容器高即预算。
+    // 首帧尚未测得时用屏幕高兜底（仅首帧；且横向约束通常更紧，不会闪）。
+    val screenH = LocalConfiguration.current.screenHeightDp
+    val density = LocalDensity.current
+    var panelHPx by remember { mutableStateOf(0) }
+    val panelHDp = if (panelHPx > 0) (panelHPx / density.density).dp else screenH.dp
+    val sliderHeight = 30.dp   // 强度滑块高度（改矮，为上方调色盘让出纵向空间；leftFixedH 预算随之减小→squareSide 在高度受限机型上增大）
+    // ===== 调色盘边长 squareSide（同时作为滑块长、切换滤镜区宽，三者同宽）=====
+    // 由两个约束共同决定，取较小者：
+    // ① 左右约束：左侧对齐控制区左缘(edgeInset)，左元素不得越过屏幕中线，即 squareSide ≤ screenW/2 - edgeInset
+    // ② 上下约束：左侧总高(调色盘+滑块+切换区) ≤ 面板可用高(panelHDp) 减上下留白，即 squareSide ≤ panelHDp - topPad - bottomPad - leftFixedH
+    //    再统一减去 bottomLift(底部抬高)，使菜单整体上移一点（在任何屏宽/屏高约束下都生效）
+    val paletteSliderGap = 6.dp        // 调色盘与强度滑块间距
+    val sliderFilterGap = 8.dp         // 强度滑块与切换滤镜区间距
+    val tintSelH = 48.dp               // 切换滤镜区(TintSelector)高度（含其上下 padding），用于上下约束预算
+    val restoreBtnH = 44.dp            // 右侧"还原"按钮高度（FilterBtn 固定 44dp）
+    val listRestoreGap = 6.dp          // 右侧参数列表与还原按钮间距
+    val topPad = 12.dp                 // 面板内容距顶留白（与 Row 的 padding(top=12.dp) 一致）
+    val bottomPad = 8.dp               // 面板内容距底留白
+    val bottomLift = 23.dp             // 效果菜单整体从底部抬高一点（内容上移、底留白增大）
+    // 左侧固定高度（不含调色盘本身）：滑块 + 两段间距 + 切换滤镜区
+    val leftFixedH = paletteSliderGap + sliderHeight + sliderFilterGap + tintSelH
+    // 左右 / 上下 两条约束各自的允许最大值，取较小者；再夹到 [120,260] 保证可用性
+    val maxByWidth = (screenW.dp / 2f) - edgeInset
+    val maxByHeight = panelHDp - topPad - bottomPad - leftFixedH
+    val squareSide = (minOf(maxByWidth, maxByHeight) - bottomLift).coerceIn(120.dp, 260.dp)
+    // 左侧总高（调色盘+滑块+切换区）；右侧参数列表高度据此反推，使左右总高一致
+    val leftTotalH = squareSide + leftFixedH
+    val listBoxH = (leftTotalH - listRestoreGap - restoreBtnH).coerceAtLeast(0.dp)
     // 调色盘与滤镜列表之间的实心间隔（连通块内部，保持整块感又有呼吸空间）。
     // 调色盘出现/不出现时列表位置与宽度均以此为准，保证两态排版一致
     val paletteListGap = 16.dp
@@ -138,7 +172,6 @@ fun EffectsPanel(
         ).coerceAtLeast(60.dp)
 
     // 横滑调节示意（弹窗）：记录各滤镜按钮位置/宽度，拖拽时在面板层叠加"同形按钮"示意（避免被列表裁剪）
-    val density = LocalDensity.current
     // 这些 map 改用普通可变容器（不再 mutableStateOf/StateMap），原因：
     // ① 它们只在 onGloballyPositioned 时被写入，整张表的 State 化会让 EffectsPanel 在每次子布局变化时都重订阅、成为滑动掉帧主要嫌疑；
     // ② 读取它们的只有 Modifier.offset { } lambda（draw 阶段、每帧跑、不需要响应式）。
@@ -163,7 +196,7 @@ fun EffectsPanel(
             exit = fadeOut(animationSpec = tween(200)),
         ) {
             Box(
-                Modifier.fillMaxSize(),
+                Modifier.fillMaxSize().onSizeChanged { panelHPx = it.height },
             ) {
                 // ===== 背景：单一图层（Layer1），永远只有一层 —— 杜绝左右背景接缝、右背景盖住左渐变 =====
                 // 有调色盘：整块实色。
@@ -258,7 +291,7 @@ fun EffectsPanel(
                                         isDark = isDark,
                                         modifier = Modifier.size(squareSide),
                                     )
-                                    Spacer(Modifier.height(6.dp))
+                                    Spacer(Modifier.height(paletteSliderGap))
                                     Slider(
                                         value = p?.intensity ?: 0.5f,
                                         onValueChange = { v -> vm.adjustTint { copy(intensity = v) } },
@@ -273,7 +306,7 @@ fun EffectsPanel(
                                             disabledInactiveTrackColor = if (isDark) Color(0xFF333333) else Color(0xFFE0DCD4),
                                         ),
                                     )
-                                    Spacer(Modifier.height(8.dp))
+                                    Spacer(Modifier.height(sliderFilterGap))
                                 }
                             }
                         }
@@ -281,6 +314,7 @@ fun EffectsPanel(
                         TintSelector(
                             tintState = tintState,
                             isDark = isDark,
+                            squareSide = squareSide,
                             onCycle = { vm.cycleTint(it) },
                             modifier = Modifier.width(squareSide),
                             onDragHintStart = { tintDragging = true },
@@ -299,9 +333,9 @@ fun EffectsPanel(
                                 horizontalAlignment = Alignment.Start,
                                 verticalArrangement = Arrangement.Top,
                             ) {
-                                // 列表区高度 = 调色盘(squareSide) + 间隔(6) + 滑块(sliderHeight)
+                                // 列表区高度 = 左侧总高 - (列表与还原间距 + 还原按钮高)，使右侧总高 = 左侧总高
                                 Box(
-                                    Modifier.fillMaxWidth().height(squareSide + 6.dp + sliderHeight)
+                                    Modifier.fillMaxWidth().height(listBoxH)
                                         .clip(RoundedCornerShape(20.dp)),
                                 ) {
                                     LazyColumn(
@@ -331,7 +365,7 @@ fun EffectsPanel(
                                         }
                                     }
                                 }
-                                Spacer(Modifier.height(6.dp))
+                                Spacer(Modifier.height(listRestoreGap))
                                 // 还原：与左侧切换按钮同高度，靠上
                                 FilterBtn("还原", active = false, applied = false, showSwitch = false, onSelect = { vm.resetAll() }, onToggle = {}, isDark = isDark, textColor = RetroSoftRed)
                             }
@@ -413,6 +447,7 @@ private fun TintSelector(
     modifier: Modifier = Modifier,
     tintState: TintState,
     isDark: Boolean = false,
+    squareSide: Dp = 164.dp,
     onCycle: (Int) -> Unit,
     onDragHintStart: () -> Unit = {},
     onDragHintEnd: () -> Unit = {},
@@ -427,14 +462,17 @@ private fun TintSelector(
     val density = LocalDensity.current
     val stepPx = with(density) { 40.dp.toPx() } // 每累积拖动约 40dp 切换一个状态，半屏(~160dp)可遍历全部三态
     val arrowColor = if (isDark) Color(0xFFCFCFCF) else Color(0xFF6B5744)
-    val arrowBg = if (isDark) Color(0xFF3A3A3A) else Color.White.copy(alpha = 0.75f)
     // <> 图标用与箭头相近的柔和色（略淡半透明），不过分突出
     val hintColor = if (isDark) Color(0xFFB0B0B0) else Color(0xFF8C7A6B)
+    // 名称与 <> 图标字号随调色盘尺寸缩放（以 164dp 为基准 1.0），并夹在合理区间：
+    // 保证两端箭头始终为完整圆形、名称不溢出，中间区随 squareSide 自然伸缩
+    val scale = (squareSide / 164.dp).coerceIn(0.72f, 1.5f)
+    val nameSize = (16f * scale).sp
     Row(
         modifier
             .clip(RoundedCornerShape(22.dp))
             .onGloballyPositioned { coords -> onBtnLayout("__TINT__", coords.localToRoot(Offset.Zero), coords.size.width) }
-            // 切换控件本身无背景色（仅 < > 箭头保留圆形背景），避免与面板背景叠出多余色块
+            // 切换控件本身无背景色（< > 箭头亦无底色，仅保留圆形点击热区），避免与面板背景叠出多余色块
             // 横滑映射：累积距离 / stepPx = 切换次数，半屏滑动可遍历全部三态，见 onHorizontalDrag
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
@@ -454,27 +492,33 @@ private fun TintSelector(
                     onDragCancel = { onDragHintEnd() },
                 )
             }
-            .padding(start = 8.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
+            .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
     ) {
-        TintArrow(isLeft = true, color = arrowColor, bg = arrowBg, onClick = { onCycle(-1) })
-        // 中间滤镜名称：固定宽度（写死），保证控件整体宽度不随文字长短变化
-        Box(Modifier.width(64.dp), contentAlignment = Alignment.Center) {
-            Text(name, color = if (isDark) Color.White else RetroBrown, fontSize = 14.sp, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
+        // 左箭头：始终贴左、完整圆形（无底色）
+        TintArrow(isLeft = true, color = arrowColor, onClick = { onCycle(-1) })
+        // 中间区域占满剩余宽度（weight(1f)），名称与 <> 图标居中；字号随调色盘尺寸动态调整
+        Row(
+            Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text(name, color = if (isDark) Color.White else RetroBrown, fontSize = nameSize, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, maxLines = 1)
+            Spacer(Modifier.width((2 * scale).dp))
+            SlideHintIcon(color = hintColor, scale = scale)
         }
-        // <> 图标（更高不透明度的提示色）放在滤镜名字后面，与右箭头之间留 6dp 间距
-        SlideHintIcon(color = hintColor)
-        Spacer(Modifier.width(6.dp))
-        TintArrow(isLeft = false, color = arrowColor, bg = arrowBg, onClick = { onCycle(1) })
+        // 右箭头：始终贴右、完整圆形（无底色）
+        TintArrow(isLeft = false, color = arrowColor, onClick = { onCycle(1) })
     }
 }
 
 @Composable
-private fun TintArrow(isLeft: Boolean, color: Color, bg: Color = Color.White.copy(alpha = 0.75f), onClick: () -> Unit) {
+private fun TintArrow(isLeft: Boolean, color: Color, onClick: () -> Unit) {
+    // 非圆形：宽度即图标宽度(14dp)，高度保留 32dp 作为点击热区（无背景、无圆形裁剪）
     Box(
-        Modifier.size(32.dp).clip(CircleShape)
-            .background(bg)
+        Modifier
+            .width(14.dp)
+            .height(32.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -535,6 +579,14 @@ private fun ColorSquare(
     var squareSize by remember { mutableFloatStateOf(0f) }
     var dotPressed by remember { mutableStateOf(false) }       // 按压大白点时放大
     val density = LocalDensity.current
+    // 按当前调色盘实测尺寸(px)计算网格点数：绘制区 = size - 2*留白，点数 = 绘制区/间距 + 1。
+    // 间距(GRID_SPACING_DP)恒定 ⇒ 调色盘缩放时点密度不变。
+    fun gridCount(sizePx: Float): Int {
+        val mp = with(density) { GRID_MARGIN_DP.toPx() }
+        val sp = with(density) { GRID_SPACING_DP.toPx() }
+        val draw = (sizePx - mp * 2f).coerceAtLeast(sp)
+        return ((draw / sp).roundToInt() + 1).coerceIn(MIN_GRID_DOTS, MAX_GRID_DOTS)
+    }
     // 大点外圈半径：拖拽/显示范围仅保留这一圈边距，使大点可触达网格(留白22dp)的全部位置，且始终完整可见
     val dotEdgeInsetPx = with(density) { 11.dp.toPx() }
     // 松手后吸附位置（仅视觉，参数不变）：按压/拖动时跟随手指自由移动（无动画滞后）；松手后平滑吸附到最近网格点
@@ -543,10 +595,11 @@ private fun ColorSquare(
             // 首帧尚未测到尺寸时直接用真实参数，避免吸附算法用 squareSize=0 算出离谱初值（如 -22）后滑入
             dotX
         } else {
-            val m = with(density) { 22.dp.toPx() }
-            val st = (squareSize - m * 2) / 10f.coerceAtLeast(1f)
+            val m = with(density) { GRID_MARGIN_DP.toPx() }
+            val c = gridCount(squareSize).coerceAtLeast(2)
+            val st = (squareSize - m * 2) / (c - 1).toFloat().coerceAtLeast(1f)
             val dpx = dotEdgeInsetPx + dotX * (squareSize - dotEdgeInsetPx * 2f)
-            val nc = ((dpx - m) / st).roundToInt().coerceIn(0, 10)
+            val nc = ((dpx - m) / st).roundToInt().coerceIn(0, c - 1)
             ((m + nc * st) - dotEdgeInsetPx) / (squareSize - dotEdgeInsetPx * 2f).coerceAtLeast(1f)
         },
         animationSpec = tween(160), label = "snapX",
@@ -555,10 +608,11 @@ private fun ColorSquare(
         targetValue = if (dotPressed) dotY else if (squareSize <= 0f) {
             dotY
         } else {
-            val m = with(density) { 22.dp.toPx() }
-            val st = (squareSize - m * 2) / 10f.coerceAtLeast(1f)
+            val m = with(density) { GRID_MARGIN_DP.toPx() }
+            val c = gridCount(squareSize).coerceAtLeast(2)
+            val st = (squareSize - m * 2) / (c - 1).toFloat().coerceAtLeast(1f)
             val dpy = dotEdgeInsetPx + dotY * (squareSize - dotEdgeInsetPx * 2f)
-            val nr = ((dpy - m) / st).roundToInt().coerceIn(0, 10)
+            val nr = ((dpy - m) / st).roundToInt().coerceIn(0, c - 1)
             ((m + nr * st) - dotEdgeInsetPx) / (squareSize - dotEdgeInsetPx * 2f).coerceAtLeast(1f)
         },
         animationSpec = tween(160), label = "snapY",
@@ -613,11 +667,12 @@ private fun ColorSquare(
                     }
 
                     // ---- 网格点：按压/拖动时仅“近点变大变白”(径向)；松手时仅“整行整列变亮”(十字，无渐隐)----
-                    val cols = 11
-                    val rows = 11
+                    // 点数随调色盘实测尺寸变化，间距(GRID_SPACING_DP)恒定 ⇒ 密度不变
+                    val cols = gridCount(w)
+                    val rows = cols
                     val dotR = 3.5f       // 网格点最小（初始）半径
                     val extraR = 7f       // 紧邻大点时额外增大的半径（大幅增强）
-                    val margin = with(density) { 22.dp.toPx() } // 边缘留白：网格点不靠近正方形边缘
+                    val margin = with(density) { GRID_MARGIN_DP.toPx() } // 边缘留白：网格点不靠近正方形边缘
                     val stepX = (w - margin * 2) / (cols - 1)
                     val stepY = (h - margin * 2) / (rows - 1)
                     // 大点中心像素坐标：按压/拖动 = 跟手自由位置(curX/Y)；松手 = 吸附位置
@@ -825,14 +880,15 @@ private fun FilterBtn(
     }
 }
 
-/** 滑块-only 滤镜的"滑动调整"提示图标：< > 两个箭头，圆头端帽在顶点叠出圆角；整体偏小、偏左。 */
+/** 滑块-only 滤镜的"滑动调整"提示图标：< > 两个箭头，圆头端帽在顶点叠出圆角；整体偏小、偏左。
+ *  scale：随调色盘尺寸缩放（默认 1f，对滤镜按钮内用法无影响）。 */
 @Composable
-internal fun SlideHintIcon(modifier: Modifier = Modifier, color: Color = Color(0xFF6B5744)) {
-    Canvas(modifier.size(16.dp, 11.dp)) {
+internal fun SlideHintIcon(modifier: Modifier = Modifier, color: Color = Color(0xFF6B5744), scale: Float = 1f) {
+    Canvas(modifier.size(16.dp * scale, 11.dp * scale)) {
         val w = size.width
         val h = size.height
         val cy = h / 2f
-        val s = 1.4.dp.toPx()
+        val s = (1.4.dp * scale).toPx()
         // 左箭头 '<'（指向左）：顶点在左，两臂在右
         drawLine(color, Offset(w * 0.42f, cy - h * 0.38f), Offset(w * 0.16f, cy), strokeWidth = s, cap = StrokeCap.Round)
         drawLine(color, Offset(w * 0.16f, cy), Offset(w * 0.42f, cy + h * 0.38f), strokeWidth = s, cap = StrokeCap.Round)

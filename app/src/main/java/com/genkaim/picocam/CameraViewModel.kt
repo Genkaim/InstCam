@@ -132,7 +132,16 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     // SharedFlow 容量 =1 + DROP_OLDEST：保证 tryEmit 永不挂起、capture 期间瞬时反馈可被 collector 消费
     private val _shutterFlash = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val shutterFlash = _shutterFlash.asSharedFlow()
-    /** 拍照完成（已落盘、已加相框、已刷新相册）后发射所拍文件，供相机页播放"取景框→灵动岛→吐出照片"过渡。 */
+    /**
+     * 快门按下即发射（在 CameraX 抓取前，文件已通过 generateFile 生成），携带目标路径，
+     * 供相机页【立即】启动"取景框→灵动岛"过渡动画，使 morph 起点与按下快门同步——
+     * 不再等待 onImageSaved，从而避免不同机型拍照延迟差异导致 morph 起点的时间间隔不一致。
+     * 文件内容（加白框）何时真正在 overlay 显示仍由 photoCaptured + photoVersion 控制，
+     * 故本信号只决定"动画何时开始"，与拍照硬件快慢无关。
+     */
+    private val _captureStarted = MutableSharedFlow<File>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val captureStarted = _captureStarted.asSharedFlow()
+    /** 拍照完成（已落盘、已加相框、已刷新相册）后发射所拍文件，供相机页无动画路径处理占位/刷新相册，以及驱动照片内容就绪。 */
     private val _photoCaptured = MutableSharedFlow<File>()
     val photoCaptured = _photoCaptured.asSharedFlow()
     private val _zoomLevel = MutableStateFlow(1f)
@@ -171,6 +180,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     var shutterFraction by mutableStateOf(0f)
     var minFocusDistance by mutableStateOf(0f)   // 镜头最近对焦距离（屈光度），由相机特性读取
     private val TARGET_EI = 1_000_000_000L       // 手动快门时维持近似曝光的等效感光度目标
+    private val REF_MIN_FOCUS_DIOPTER = 10f // 设备不报最小对焦距离(=0/null)时退化的参考最大屈光度(≈0.1m 最近对焦)，保证滑块始终显示距离
     private var targetFps = 30
 
     private var lastLocation: Location? = null
@@ -375,6 +385,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         _hasTakenPhoto.value = true   // 第一次按下快门后，空相册引导光晕不再显示
         // 在 CameraX 抓取前立即闪白（用 tryEmit 不挂起）：给用户最快反馈
         _shutterFlash.tryEmit(Unit)
+        // 立即发射 captureStarted：让相机页同步启动"取景框→灵动岛"morph（与按下快门对齐，
+        // 不受不同机型拍照延迟影响）。照片内容就绪仍由 onImageSaved→photoCaptured→photoVersion 控制。
+        _captureStarted.tryEmit(file)
         imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
@@ -393,12 +406,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         withContext(Dispatchers.IO) {
                             PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff)
                         }
-                        // 在同一 IO 协程内、文件刚写完后立即取色——彻底消除 overlay 读取时机/OS 缓存问题
-                        _extractedColor.value = PhotoStorage.extractDominantColor(file, 0xFFEDE0C8.toInt())
                         // T2: addPolaroidFrame 完成 → photoVersion 变化 → LaunchedEffect 的 while 退出 → showPhoto=true
-                        //    → AsyncImage 读到带白框版本
+                        //    → AsyncImage 读到带白框版本。必须早于取色，取色不计入照片出现间隔（避免不同设备时长差异）。
                         _photoVersion.value = System.currentTimeMillis()
                         _photoProcessing.value = false
+                        // 取色在照片出现之后再后台进行（仅用于详情页背景色），不阻塞过渡动画
+                        _extractedColor.value = PhotoStorage.extractDominantColor(file, 0xFFEDE0C8.toInt())
                     }
                 }
                 override fun onError(exc: ImageCaptureException) = Unit
@@ -459,7 +472,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             if (focusFraction <= 0.001f) {
                 b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             } else {
-                val diopters = (focusFraction * minFocus).coerceAtLeast(0f)
+                // 设备支持手动对焦时用其真实最小对焦距离；否则退化为参考值，保证滑块始终对应一个连续距离
+                val effMin = if (minFocus > 0f) minFocus else REF_MIN_FOCUS_DIOPTER
+                val diopters = (focusFraction * effMin).coerceAtLeast(0f)
                 b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                 b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, diopters)
             }
@@ -492,11 +507,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         return fastNs * Math.pow(slowNs / fastNs, fraction.toDouble()) / 1_000_000_000.0
     }
 
-    /** 对焦距离文本：自动 / 固定(不支持手动) / "x.xx m"。 */
+    /** 对焦距离文本：自动 / "x.xx m"（连续距离，从近到远）。设备不报最小对焦距离时退化为参考值，始终显示距离而非"固定"。 */
     fun focusDistanceText(): String {
         if (focusFraction <= 0.001f) return "自动"
-        val minF = minFocusDistance
-        if (minF <= 0f) return "固定"
+        val minF = if (minFocusDistance > 0f) minFocusDistance else REF_MIN_FOCUS_DIOPTER
         val meters = (1f / (focusFraction * minF)).coerceAtLeast(0.05f)
         return if (meters >= 1f) "%.1f m".format(meters) else "%.2f m".format(meters)
     }
