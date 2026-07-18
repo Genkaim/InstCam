@@ -17,3 +17,6 @@ local.properties
 # 发布签名密钥与配置（含密码，禁止提交到仓库）
 keystore.properties
 *.jks
+
+# WorkBuddy 工作区数据（本地记忆/技能，不应入库）
+.workbuddy/
