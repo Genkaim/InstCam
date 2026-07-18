@@ -356,8 +356,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      *  焦段在相机重新绑定（切前台/从设置或相册返回等导致预览中途重连）后会被重置为 1x，故每次重连都按 _zoomLevel 重新套用。 */
     fun onPreviewStreaming() {
         targetFps = 30
-        controller.setZoomRatio(_zoomLevel.value)   // 重连后还原焦段（修复：从设置返回主界面变 1x）
-        pushCameraOptions()
+        pushCameraOptions()  // 先设 FPS/AF/AE（内部 clearCaptureRequestOptions 可能清掉 zoom）
+        controller.setZoomRatio(_zoomLevel.value)   // 之后还原焦段——确保 zoom 不被 clearCaptureRequestOptions 清掉
     }
 
     fun updateFocusFraction(f: Float) { focusFraction = f.coerceIn(0f, 1f); pushCameraOptions() }

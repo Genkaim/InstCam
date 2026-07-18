@@ -84,7 +84,7 @@ fun ViewfinderFrame(
         AndroidView(
             factory = { ctx ->
                 PreviewView(ctx).apply {
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                    scaleType = PreviewView.ScaleType.FIT_CENTER  // 完整显示预览（不裁切），倍率与拍照一致；拍照后 1:1 中心裁切
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                     this.controller = controller
                     controller.bindToLifecycle(lifecycleOwner)

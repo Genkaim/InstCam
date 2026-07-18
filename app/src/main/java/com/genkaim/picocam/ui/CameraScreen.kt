@@ -351,8 +351,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     }
 
     // 取景框拖拽（作用于取景框/灵动岛本体）：竖向跟手改 progress，松手吸附
-    val headerDrag = Modifier.pointerInput(selectionMode) {
-        if (!selectionMode) {
+    val headerDrag = Modifier.pointerInput(selectionMode, effectsExpanded) {
+        if (!selectionMode && !effectsExpanded) {
             detectVerticalDragGestures(
                 onVerticalDrag = { change, dragAmount -> applyDrag(dragAmount); change.consume() },
                 onDragEnd = { scope.launch { settleTo(0f) } },
@@ -565,12 +565,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         .background(Brush.verticalGradient(listOf(bgColor, Color.Transparent))),
                 )
 
-                // 效果面板：悬浮叠加层，浮在相册上方（控制栏正下方），展开/收起不影响相册布局
-                EffectsPanel(
-                    visible = effectsExpanded,
-                    vm = vm,
-                    isDark = isDark,
-                )
+                // EffectsPanel 已移到 if/else 外部（确保空相册时也能显示）
 
                 // 多选模式：悬浮胶囊底部菜单 + 渐入/上滑/下滑动效 + 点击空白退出选择
                 Column(Modifier.fillMaxSize().background(Color.Transparent)) {
@@ -583,26 +578,46 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         // 悬浮底部胶囊（抬高到底部 40dp），点击"取消"退出多选
                         // 浅色模式用 desaturated RetroPaper（0xFFEAE3D5）：保留暖色调但降低饱和度，
                         // 与相册背景 Color(0xFFF0EDE6) 形成柔和但清晰的对比，不抢视觉焦点；深色模式保持 surfaceCard
+                        // 所有元素固定宽高 + maxLines=1：文字内容变化（"已选 1"↔"已选 999"、"全选"↔"取消全选"）
+                        // 不影响布局，dp 单位随屏幕密度自动缩放（多屏适配）
                         Row(
                             Modifier
                                 .align(Alignment.BottomCenter)
                                 .padding(bottom = 40.dp)
+                                .padding(horizontal = 16.dp)  // 左右间距
                                 .clip(RoundedCornerShape(28.dp))
                                 .background(if (isDark) surfaceCard(isDark) else Color(0xFFEAE3D5))
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("取消", color = onSurface(isDark), modifier = Modifier.clickable {
-                                selectionMode = false; selectedPhotos.clear()
-                            })
-                            Spacer(Modifier.width(16.dp))
-                            Text("已选 ${selectedPhotos.size}", color = onSurfaceSoft(isDark), style = MaterialTheme.typography.labelMedium)
+                            // 取消按钮：固定宽度，无背景
+                            Box(
+                                modifier = Modifier.width(40.dp).height(36.dp).clickable {
+                                    selectionMode = false; selectedPhotos.clear()
+                                },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("取消", color = onSurface(isDark), maxLines = 1)
+                            }
                             Spacer(Modifier.width(8.dp))
-                            // 全选按钮：固定宽度 Box 居中文字，避免"全选"↔"取消全选"切换时按钮宽度变化导致整行重排
+                            // 已选计数：固定宽度，容纳"已选 99"
+                            Box(
+                                modifier = Modifier.width(52.dp).height(36.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    "已选 ${selectedPhotos.size}",
+                                    color = onSurfaceSoft(isDark),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            // 全选按钮：固定宽度 Box 居中文字，避免"全选"↔"取消全选"切换时按钮宽度变化
                             val allSelected = photos.isNotEmpty() && selectedPhotos.size == photos.size
                             Box(
                                 modifier = Modifier
-                                    .width(72.dp)
+                                    .width(60.dp)
                                     .height(36.dp)
                                     .clip(RoundedCornerShape(18.dp))
                                     .clickable {
@@ -615,12 +630,13 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     if (allSelected) "取消全选" else "全选",
                                     color = onSurfaceSoft(isDark),
                                     style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
-                            // 分享胶囊（复用相册详情风格）
+                            // 分享胶囊：固定宽度
                             Box(
-                                Modifier.height(44.dp).clip(RoundedCornerShape(22.dp))
+                                Modifier.width(60.dp).height(44.dp).clip(RoundedCornerShape(22.dp))
                                     .background(if (selectedPhotos.size > 0) surfaceCard(isDark) else onSurfaceSoft(isDark).copy(alpha = 0.3f))
                                     .clickable(enabled = selectedPhotos.size > 0) {
                                         val uris = ArrayList<Uri>()
@@ -640,23 +656,43 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                             }
                                             context.startActivity(Intent.createChooser(sendIntent, "分享 ${selectedPhotos.size} 张照片"))
                                         }
-                                    }.padding(horizontal = 20.dp),
+                                    },
                                 contentAlignment = Alignment.Center,
-                            ) { Text("分享", color = if (selectedPhotos.size > 0) onSurface(isDark) else onSurfaceSoft(isDark)) }
+                            ) {
+                                Text(
+                                    "分享",
+                                    color = if (selectedPhotos.size > 0) onSurface(isDark) else onSurfaceSoft(isDark),
+                                    maxLines = 1,
+                                )
+                            }
                             Spacer(Modifier.width(8.dp))
-                            // 删除胶囊（铁锈红）
+                            // 删除圆形图标（参考相册详情页右下角删除键）：44dp 圆形 + Delete 图标
                             Box(
-                                Modifier.height(44.dp).clip(RoundedCornerShape(22.dp))
+                                Modifier.size(44.dp).clip(CircleShape)
                                     .background(if (selectedPhotos.size > 0) RetroRust.copy(alpha = 0.15f) else onSurfaceSoft(isDark).copy(alpha = 0.3f))
-                                    .clickable(enabled = selectedPhotos.size > 0) { showDeleteConfirm = true }
-                                    .padding(horizontal = 20.dp),
+                                    .clickable(enabled = selectedPhotos.size > 0) { showDeleteConfirm = true },
                                 contentAlignment = Alignment.Center,
-                            ) { Text("删除", color = if (selectedPhotos.size > 0) RetroRust else onSurfaceSoft(isDark)) }
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除",
+                                    tint = if (selectedPhotos.size > 0) RetroRust else onSurfaceSoft(isDark),
+                                )
+                            }
                         }   // Row 结束
                     }   // Box(fillMaxSize) 结束
                 }   // AnimatedVisibility 结束
             }   // Column 结束（多选菜单列）
                 }   // 关闭 else (空相册 / 有相册)
+
+                // 效果面板：悬浮叠加层，浮在相册上方（控制栏正下方），展开/收起不影响相册布局
+                // 关键：放在 if/else 外部，确保空相册时也能显示（之前在 else 内导致无照片时打不开）
+                EffectsPanel(
+                    visible = effectsExpanded,
+                    vm = vm,
+                    isDark = isDark,
+                    modifier = Modifier.fillMaxSize(),
+                )
 
         }   // 关闭 weight(1f) Box
         }   // 关闭 Column（相机内容）
@@ -672,6 +708,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 albumSlot = albumSlot,
                 isDark = isDark,
                 photoVersion = photoVersion,
+                photoProcessing = vm.photoProcessing.collectAsStateWithLifecycle().value,
                 onDetailState = { },
                 onAddToAlbum = {
                     // 关键：不要重置 albumSlot = null

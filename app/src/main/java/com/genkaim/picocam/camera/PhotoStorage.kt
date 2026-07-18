@@ -68,9 +68,16 @@ object PhotoStorage {
             }
             if (rotated !== src) src.recycle()
 
-            // 应用滤镜效果到原图
-            val filtered = applyFilterToBitmap(rotated, eff)
-            rotated.recycle()
+            // 1:1 中心裁切：与取景框 FILL_CENTER 预览一致——用户看到什么就拍什么
+            val side = minOf(rotated.width, rotated.height)
+            val cropX = (rotated.width - side) / 2
+            val cropY = (rotated.height - side) / 2
+            val squared = Bitmap.createBitmap(rotated, cropX, cropY, side, side)
+            if (squared !== rotated) rotated.recycle()
+
+            // 应用滤镜效果到裁切后的正方形图
+            val filtered = applyFilterToBitmap(squared, eff)
+            squared.recycle()
 
             val border = (filtered.width * 0.06f).toInt().coerceAtLeast(16)
             val bottom = border * 6

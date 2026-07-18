@@ -143,6 +143,7 @@ fun CaptureTransitionOverlay(
     albumSlot: Rect?,
     isDark: Boolean = false,
     photoVersion: Long = 0L,
+    photoProcessing: Boolean = false,
     onDetailState: (Boolean) -> Unit,
     onExit: suspend (Boolean) -> Unit,
     onAddToAlbum: suspend () -> Unit,
@@ -350,7 +351,13 @@ fun CaptureTransitionOverlay(
     // 与 PhotoViewerActivity 保持一致：fallback 统一为 RetroPaper（暖黄牛皮纸色），
     // 不论浅色/深色（深色模式最终 bg 用 darkBase，不受 bgColorTarget 影响）
     var bgColorTarget by remember { mutableIntStateOf(RetroPaper.toArgb()) }
-    LaunchedEffect(file) { bgColorTarget = extractDominantColor(file, RetroPaper.toArgb()) }
+    // 关键：等 addPolaroidFrame 完成（photoProcessing 变 false）再取色——避免读到正在被覆盖的残缺文件
+    // 之前在拍照后立即取色，addPolaroidFrame 此时正在截断+重写文件 → Palette 解析出错取到错误颜色
+    // 详情页取色是用户点入后才执行，那时文件已完整
+    LaunchedEffect(file) {
+        while (photoProcessing) { delay(50) }
+        bgColorTarget = extractDominantColor(file, RetroPaper.toArgb())
+    }
     val monetColor by animateColorAsState(
         targetValue = Color(bgColorTarget),
         animationSpec = tween(durationMillis = 400, easing = LinearEasing),
@@ -364,30 +371,7 @@ fun CaptureTransitionOverlay(
     Box(Modifier.fillMaxSize()
         .background(Color.Transparent)  // 保持透明：过渡期间相册透出可见（showDetail=true 时 scrim 内部会铺 bgColor 遮挡相册）
         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }) {
-        // 模糊背景层：用刚拍的照片做模糊源，scrim 之前（视觉最下面）。
-        // graphicsLayer { renderEffect = BlurEffect(35px, 35px, TileMode.Decal) } 只模糊本层（不影响兄弟节点
-        // —— 照片、按钮仍清晰）。用 AnimatedVisibility 包裹，与 scrim 同步淡入/淡出（400ms 让动画更明显可见）。
-        // 模糊层 fillMaxSize 占满整个屏幕。
-        AnimatedVisibility(
-            visible = showDetail,
-            enter = fadeIn(tween(400)),
-            exit = fadeOut(tween(400)),
-        ) {
-            AsyncImage(
-                model = remember(file, photoVersion) {
-                    ImageRequest.Builder(context)
-                        .data(file)
-                        .memoryCacheKey("bg_${file.path}_$photoVersion")
-                        .diskCacheKey("bg_${file.path}_$photoVersion")
-                        .build()
-                },
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { renderEffect = BlurEffect(35f * densityPx, 35f * densityPx, TileMode.Decal) },
-            )
-        }
+        // 模糊背景层已完全移除（用户要求：完全去除预览照片时的背景）
 
         // 半透明遮罩（scrim）；点击背景处关闭
         // 取色逻辑与 PhotoViewerActivity 完全一致（同函数 + 同 RetroPaper fallback + getLightMutedColor）。
@@ -401,7 +385,7 @@ fun CaptureTransitionOverlay(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(if (isDark) Color(0xFF242424) else monetColor.copy(alpha = 0.9f))
+                    .background(if (isDark) Color(0xFF242424) else monetColor)
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() },
             ) {
                 if (isDark) {
@@ -634,8 +618,10 @@ private suspend fun extractDominantColor(file: File, fallback: Int): Int = withC
         val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
         val palette = Palette.from(bm).generate()
         bm.recycle()
-        // 与 PhotoViewerActivity.extractDominantColor 保持一致：getLightMutedColor(fallback)
-        palette.getLightMutedColor(fallback)
+        // 取色策略：getLightVibrantColor 为主（取亮色主调），getDominantColor 为 fallback（屏幕照片等无 light vibrant swatch 时退到最显著色）
+        // 之前用 getDominantColor 对夕阳照片会取到暗色建筑轮廓（dominant = 最频繁色 = 建筑剪影）→ 背景变深棕
+        // getLightVibrantColor 优先取亮色（夕阳天空、屏幕白底等），对各种照片都能取到反映主题的亮色
+        palette.getLightVibrantColor(palette.getDominantColor(fallback))
     } catch (_: Exception) { fallback }
 }
 

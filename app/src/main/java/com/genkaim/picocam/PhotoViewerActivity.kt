@@ -179,7 +179,9 @@ private suspend fun extractDominantColor(file: File, fallback: Int): Int = withC
         val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
         val palette = Palette.from(bm).generate()
         bm.recycle()
-        palette.getLightMutedColor(fallback)
+        // 取色策略：getLightVibrantColor 为主（取亮色主调），getDominantColor 为 fallback
+        // 夕阳照片：getLightVibrantColor 取到亮色天空；屏幕照片：无 light vibrant swatch → 退到 dominant（白底）
+        palette.getLightVibrantColor(palette.getDominantColor(fallback))
     } catch (_: Exception) { fallback }
 }
 
