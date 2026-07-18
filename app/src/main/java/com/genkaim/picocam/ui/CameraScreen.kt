@@ -395,14 +395,14 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
 
     Box(modifier = Modifier.fillMaxSize()) {
         // 相册顶部彩色光晕（空相册引导氛围）：
-        // · 显示时机：【尚未拍过照】(!hasTakenPhoto) 且 【相册为空】(photos.isEmpty()) 时显示——双重保证；
-        //   第一次按下快门后或相册有照片时均不显示。
+        // · 显示时机：【相册为空】(photos.isEmpty()) 时显示——无论是从未拍过照，还是拍过后又删光；
+        //   photos 是响应式 StateFlow，删除后自动重组触发光晕显示/隐藏。
         // · 位置：本 Box 是覆盖整个屏幕的容器（无 statusBarsPadding），故用 Alignment.TopCenter 贴【屏幕绝对顶边】（碰到状态栏/相机区上方）。
         // · 光晕中心：水平跟随设置里灵动岛位置 diConfig.posX（非强制居中），垂直做轻微涌动；仅做上下涌动 + 反相呼吸，不水平漂移。
         // · 层级：作为本 Box 第一个子项（最底），取景框/灵动岛/相册在其上；空相册时屏幕顶部显示，小岛浮于其上。
         // · 可见性：相册态(p=0)最亮，取景框展开(p→1)淡出；首次进入 900ms 渐入。
         // · 风格：蓝白晨曦薄雾（参考 Gemini 首页），冷色调柔和无色边界。
-        if (!hasTakenPhoto && photos.isEmpty()) {
+        if (photos.isEmpty()) {
             val albumGlowFade = (1f - p).coerceIn(0f, 1f)
             val glowEnter = remember { Animatable(0f) }
             LaunchedEffect(Unit) { glowEnter.animateTo(1f, tween(900)) }
@@ -412,6 +412,12 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
             val yWarm by glowTrans.animateFloat(-0.05f, 0.03f, infiniteRepeatable(tween(7000, easing = LinearEasing), RepeatMode.Reverse))  // 轻微上下涌动
             val yCool by glowTrans.animateFloat(0.0f, 0.10f, infiniteRepeatable(tween(9000, easing = LinearEasing), RepeatMode.Reverse))
             val glowVisible = glowEnter.value * albumGlowFade
+            // Brush.radialGradient 的 center/radius 是【像素坐标】（非 0~1 归一化）：
+            // 之前传 Offset(0.5, ...) 实际是 (0.5px, ...) → 光晕被钉在屏幕左上角。必须把 diConfig.posX 转成像素。
+            val glowBoxHeightPx = 300f * densityPx
+            val glowCenterX = diConfig.posX * screenW * densityPx
+            val glowCenterYWarm = yWarm * glowBoxHeightPx
+            val glowCenterYCool = yCool * glowBoxHeightPx
             if (glowVisible > 0.01f) {
                 // 主层：晨曦核心（极浅蓝白 → 浅蓝 → 中蓝 → 透明）
                 Box(
@@ -428,8 +434,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     Color(0xFFBDD0F5).copy(alpha = 0.28f),   // 中蓝
                                     Color.Transparent,
                                 ),
-                                center = Offset(diConfig.posX, yWarm),
-                                radius = 720f,
+                                center = Offset(glowCenterX, glowCenterYWarm),
+                                radius = 260f * densityPx,
                             ),
                         ),
                 )
@@ -448,8 +454,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     Color(0xFFCCBFE8).copy(alpha = 0.20f),   // 微紫
                                     Color.Transparent,
                                 ),
-                                center = Offset(diConfig.posX, yCool),
-                                radius = 820f,
+                                center = Offset(glowCenterX, glowCenterYCool),
+                                radius = 300f * densityPx,
                             ),
                         ),
                 )
@@ -661,7 +667,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text("取消", color = onSurface(isDark), maxLines = 1)
+                                Text("取消", color = onSurface(isDark), maxLines = 1, fontSize = 13.sp)
                             }
                             Spacer(Modifier.width(8.dp))
                             // 已选计数：固定宽度，容纳"已选 99"
@@ -727,6 +733,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     "分享",
                                     color = if (selectedPhotos.size > 0) onSurface(isDark) else onSurfaceSoft(isDark),
                                     maxLines = 1,
+                                    fontSize = 13.sp,
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
