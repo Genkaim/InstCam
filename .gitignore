@@ -20,3 +20,6 @@ keystore.properties
 
 # WorkBuddy 工作区数据（本地记忆/技能，不应入库）
 .workbuddy/
+
+# Kotlin 编译器临时错误日志（每次编译都重新生成）
+.kotlin/
