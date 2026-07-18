@@ -143,7 +143,7 @@ fun CaptureTransitionOverlay(
     albumSlot: Rect?,
     isDark: Boolean = false,
     photoVersion: Long = 0L,
-    photoProcessing: Boolean = false,
+    extractedColor: Int = 0xFFEDE0C8.toInt(),  // 莫奈取色结果（由 ViewModel 在 addPolaroidFrame 完成后提取）
     onDetailState: (Boolean) -> Unit,
     onExit: suspend (Boolean) -> Unit,
     onAddToAlbum: suspend () -> Unit,
@@ -345,21 +345,9 @@ fun CaptureTransitionOverlay(
     val btnIconColor = if (isDark) Color.White else RetroBrown
     val btnDelBg = if (isDark) RetroDarkSurface else RetroRust.copy(alpha = 0.15f)
     val btnDelIcon = if (isDark) Color.White else RetroRust
-    // 莫奈取色背景：从照片提取主色并去色（降低饱和度），详情态作为背景，90% 不透明度。
-    // 解码在 IO 线程完成（见 extractDominantColor），animateColorAsState 平滑过渡避免原色瞬切。
-    val darkFallback = RetroDarkBg.toArgb()
-    // 与 PhotoViewerActivity 保持一致：fallback 统一为 RetroPaper（暖黄牛皮纸色），
-    // 不论浅色/深色（深色模式最终 bg 用 darkBase，不受 bgColorTarget 影响）
-    var bgColorTarget by remember { mutableIntStateOf(RetroPaper.toArgb()) }
-    // 关键：等 addPolaroidFrame 完成（photoProcessing 变 false）再取色——避免读到正在被覆盖的残缺文件
-    // 之前在拍照后立即取色，addPolaroidFrame 此时正在截断+重写文件 → Palette 解析出错取到错误颜色
-    // 详情页取色是用户点入后才执行，那时文件已完整
-    LaunchedEffect(file) {
-        while (photoProcessing) { delay(50) }
-        bgColorTarget = extractDominantColor(file, RetroPaper.toArgb())
-    }
+    // 莫奈取色背景：直接使用 ViewModel 在 addPolaroidFrame 完成后提取的颜色（同一 IO 协程，无时序问题）
     val monetColor by animateColorAsState(
-        targetValue = Color(bgColorTarget),
+        targetValue = Color(extractedColor),
         animationSpec = tween(durationMillis = 400, easing = LinearEasing),
         label = "monetBg",
     )

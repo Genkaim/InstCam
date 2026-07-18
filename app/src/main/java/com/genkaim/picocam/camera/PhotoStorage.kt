@@ -15,6 +15,7 @@ import android.location.Location
 import com.genkaim.picocam.camera.EffectiveFilter
 import com.genkaim.picocam.camera.buildFilterColorMatrix
 import androidx.exifinterface.media.ExifInterface
+import androidx.palette.graphics.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -24,6 +25,10 @@ import kotlin.math.roundToInt
 
 /** 照片存储工具：存到 app 私有目录，拍照后自动添加拍立得白色边框。 */
 object PhotoStorage {
+
+    /** 缩略图长边目标尺寸（px）。对三列网格(~120dp)与详情底部缩略图条(~56dp)均足够清晰，
+     *  文件仅约 20~40KB，磁盘读取/解码开销相比 8MB 原图可忽略不计。 */
+    const val THUMB_SIZE = 400
 
     private fun getDir(context: Context): File =
         context.getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES)
@@ -107,9 +112,44 @@ object PhotoStorage {
                 }
                 exif.saveAttributes()
             } catch (_: Exception) {}
+            // 同时生成缩略图：列表/缩略图条永远加载它，避免读取 8MB 原图
+            generateThumbnail(file, THUMB_SIZE)
         } catch (_: Exception) {}
         file
     }
+
+    /** 给定原图文件，返回其缩略图文件（即便尚不存在也返回预期路径）。
+     *  命名规则：原图 InstCam_xxx.jpg → InstCam_xxx_thumb.jpg（与原图同目录）。 */
+    fun thumbnailFileFor(file: File): File =
+        File(file.parentFile, "${file.nameWithoutExtension}_thumb.jpg")
+
+    /** 返回列表/缩略图条应加载的图片：若存在缩略图则用缩略图，否则回退原图（旧照片或缩略图尚未生成时）。 */
+    fun thumbnailFor(file: File): File {
+        val t = thumbnailFileFor(file)
+        return if (t.exists()) t else file
+    }
+
+    /**
+     * 由原图生成缩略图（长边 [size]），写入 [thumbnailFileFor] 路径。
+     * 用 inSampleSize 直接解码到目标尺寸，避免先解码全分辨率再缩放的内存浪费。
+     * 失败或不支持时返回 null（调用方回退原图）。
+     */
+    fun generateThumbnail(file: File, size: Int = THUMB_SIZE): File? = runCatching {
+        val out = thumbnailFileFor(file)
+        if (out.exists() && out.length() > 0) return@runCatching out
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+        var sample = 1
+        val longEdge = if (bounds.outWidth > bounds.outHeight) bounds.outWidth else bounds.outHeight
+        while (longEdge / sample / 2 > size) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@runCatching null
+        out.parentFile?.mkdirs()
+        FileOutputStream(out).use { fos -> bm.compress(Bitmap.CompressFormat.JPEG, 82, fos) }
+        bm.recycle()
+        out
+    }.getOrNull()
 
     /** 将十进制度数转为 EXIF DMS 格式的三个整数值（度、分、毫秒）。 */
     private fun decimalToDms(decimal: Double): IntArray {
@@ -120,11 +160,13 @@ object PhotoStorage {
         return intArrayOf(d, m, s100)
     }
 
-    fun listPhotos(context: Context): List<File> {
-        return getDir(context)
+    fun listPhotos(context: Context, limit: Int = Int.MAX_VALUE): List<File> {
+        val all = getDir(context)
             .listFiles { f -> f.extension.equals("jpg", ignoreCase = true) }
+            ?.filter { !it.nameWithoutExtension.endsWith("_thumb") }   // 排除缩略图，避免相册把缩略图当独立照片重复展示
             ?.sortedByDescending { it.lastModified() }
             ?: emptyList()
+        return if (limit == Int.MAX_VALUE) all else all.take(limit)
     }
 
     /**
@@ -172,5 +214,23 @@ object PhotoStorage {
             canvas.drawRect(0f, 0f, out.width.toFloat(), out.height.toFloat(), vignettePaint)
         }
         return out
+    }
+
+    /** 从照片文件提取主色（莫奈取色）。与 PhotoViewerActivity 逻辑完全一致：
+     *  缩小到 ~256px → Palette → getLightVibrantColor(getDominantColor(fallback))。 */
+    suspend fun extractDominantColor(file: File, fallback: Int): Int = withContext(Dispatchers.IO) {
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.path, bounds)
+            val target = 256
+            var sample = 1
+            var w = bounds.outWidth; var h = bounds.outHeight
+            while (maxOf(w, h) / sample > target * 2) { sample *= 2 }
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample; inJustDecodeBounds = false }
+            val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
+            val palette = Palette.from(bm).generate()
+            bm.recycle()
+            palette.getLightVibrantColor(palette.getDominantColor(fallback))
+        } catch (_: Exception) { fallback }
     }
 }

@@ -56,6 +56,9 @@ import com.genkaim.picocam.camera.FilterParams
 /** 进程内单例：DataStore 存于 context.filesDir/datastore/filter_state.preferences_pb。 */
 private val Context.filterDataStore: DataStore<Preferences> by preferencesDataStore(name = "filter_state")
 
+/** 相册首屏一次性加载的最近照片数；其余在后台补全，避免进入页面时被全量目录扫描+排序阻塞。 */
+private const val ALBUM_FIRST_PAGE = 60
+
 /** 调色盘三态：无滤镜 / 暖色 / 冷色，由底部箭头循环切换，替代原独立的暖/冷滤镜。 */
 enum class TintState { NONE, WARM, COOL }
 
@@ -90,6 +93,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     /** 拍照处理中：addPolaroidFrame 在 IO 协程里跑期间为 true。UI 端可监听此信号决定何时 clearPlaceholder。 */
     private val _photoProcessing = MutableStateFlow(false)
     val photoProcessing: StateFlow<Boolean> = _photoProcessing.asStateFlow()
+
+    /** 莫奈取色结果：在 addPolaroidFrame 完成后（同一 IO 协程）直接提取，避免 overlay 读取时机问题。 */
+    private val _extractedColor = MutableStateFlow(0xFFEDE0C8.toInt())  // RetroPaper 作为初始值
+    val extractedColor: StateFlow<Int> = _extractedColor.asStateFlow()
 
     /** 将照片同步插入相册列表首位（立即可见，不等 refreshPhotos 异步完成）。 */
     fun prependPhoto(file: File) {
@@ -326,6 +333,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         withContext(Dispatchers.IO) {
                             PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff)
                         }
+                        // 在同一 IO 协程内、文件刚写完后立即取色——彻底消除 overlay 读取时机/OS 缓存问题
+                        _extractedColor.value = PhotoStorage.extractDominantColor(file, 0xFFEDE0C8.toInt())
                         // T2: addPolaroidFrame 完成 → photoVersion 变化 → LaunchedEffect 的 while 退出 → showPhoto=true
                         //    → AsyncImage 读到带白框版本
                         _photoVersion.value = System.currentTimeMillis()
@@ -336,7 +345,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             })
     }
 
-    fun deletePhoto(file: File) { if (file.delete()) refreshPhotos() }
+    fun deletePhoto(file: File) {
+        // 同时删除缩略图，避免残留的 _thumb 文件占用空间
+        PhotoStorage.thumbnailFileFor(file).delete()
+        if (file.delete()) refreshPhotos()
+    }
     fun toggleFlash() {
         val next = when (_flashMode.value) { FlashMode.AUTO -> FlashMode.ON; FlashMode.ON -> FlashMode.OFF; FlashMode.OFF -> FlashMode.AUTO }
         _flashMode.value = next
@@ -435,11 +448,28 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun refreshPhotos() {
         viewModelScope.launch {
-            val list = withContext(Dispatchers.IO) {
+            // 首屏只取最近 ALBUM_FIRST_PAGE 张，先让相册快速出图；其余后台继续加载
+            val first = withContext(Dispatchers.IO) {
+                PhotoStorage.listPhotos(getApplication(), limit = ALBUM_FIRST_PAGE)
+            }
+            _photos.value = first
+            val all = withContext(Dispatchers.IO) {
                 PhotoStorage.listPhotos(getApplication())
             }
-            _photos.value = list
-            _photoVersion.value = System.currentTimeMillis()
+            if (all.size > _photos.value.size) _photos.value = all
+            // 后台为尚无缩略图的照片补生成（前 ALBUM_FIRST_PAGE 张优先），让历史照片下次进入也能秒开列表
+            warmMissingThumbnails(all)
+        }
+    }
+
+    /** 后台为尚无缩略图的照片补生成（首批优先）。运行在 IO 线程，不阻塞 UI。 */
+    private suspend fun warmMissingThumbnails(list: List<File>) {
+        withContext(Dispatchers.IO) {
+            list.take(ALBUM_FIRST_PAGE).forEach { f ->
+                if (!PhotoStorage.thumbnailFileFor(f).exists()) {
+                    PhotoStorage.generateThumbnail(f)
+                }
+            }
         }
     }
 

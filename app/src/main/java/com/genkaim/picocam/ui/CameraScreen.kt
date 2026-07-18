@@ -104,6 +104,7 @@ import coil.compose.SubcomposeAsyncImage
 import coil.imageLoader
 import coil.request.ImageRequest
 import com.genkaim.picocam.CameraViewModel
+import com.genkaim.picocam.camera.PhotoStorage
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -507,7 +508,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 // 完全透明占位：只占空间（避免相册从空状态突变到有格子）+ 测量飞入落点
                                 // 不显示任何视觉元素。placeRatio key 含 photoVersion → addPolaroidFrame 完成后
                                 // 比例重算为正确值（虽然透明看不到，但 GridPhotoCard 切换时 fileRatio 也对应正确）。
-                                val placeRatio = remember(file, photoVersion) {
+                                val placeRatio = remember(file) {
                                     try {
                                         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                         BitmapFactory.decodeFile(file.path, o)
@@ -533,7 +534,6 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     isDark = isDark,
                                     selectionMode = selectionMode,
                                     isSelected = isSelected,
-                                    photoVersion = photoVersion,
                                     onClick = {
                                         if (selectionMode) {
                                             if (isSelected) selectedPhotos.remove(file) else selectedPhotos.add(file)
@@ -708,7 +708,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 albumSlot = albumSlot,
                 isDark = isDark,
                 photoVersion = photoVersion,
-                photoProcessing = vm.photoProcessing.collectAsStateWithLifecycle().value,
+                extractedColor = vm.extractedColor.collectAsStateWithLifecycle().value,
                 onDetailState = { },
                 onAddToAlbum = {
                     // 关键：不要重置 albumSlot = null
@@ -718,13 +718,15 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                     // → close() 飞入动画的 flySlot 始终为 null → 飞入动画不播放。
                     vm.setPlaceholder(transitionFile!!)
                     vm.refreshPhotosSync()
-                    // 预加载缩略图到 Coil 内存缓存，使 clearPlaceholder 后 GridPhotoCard 直接命中缓存无闪烁
+                    // 预加载缩略图到 Coil 内存缓存，使 clearPlaceholder 后 GridPhotoCard 直接命中缓存无闪烁。
+                    // 列表显示的是缩略图，因此这里预热缩略图（而非原图）才能命中缓存。
                     scope.launch {
                         val f = transitionFile!!
+                        val t = PhotoStorage.thumbnailFor(f)
                         val req = ImageRequest.Builder(context)
-                            .data(f)
-                            .size(150)
-                            .memoryCacheKey("thumb_${f.path}_${f.lastModified()}")
+                            .data(t)
+                            .size(PhotoStorage.THUMB_SIZE)
+                            .memoryCacheKey("thumb_${t.path}_${t.lastModified()}")
                             .build()
                         context.imageLoader.execute(req)
                     }
@@ -781,10 +783,9 @@ private fun GridPhotoCard(
     isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    photoVersion: Long,
 ) {
     val context = LocalContext.current
-    // 预读照片真实比例（仅读文件头）。photoVersion 变化（新照 / Polaroid 完成）时不必重读所有格子——比例只跟文件本身有关。
+    // 预读照片真实比例（仅读文件头）。比例只跟文件本身有关，与任何全局刷新无关。
     val fileRatio = remember(file) {
         try {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -792,15 +793,16 @@ private fun GridPhotoCard(
             if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth.toFloat() / opts.outHeight.toFloat() else 1f
         } catch (_: Exception) { 1f }
     }
-    // ImageRequest：size(150) 缩略图尺寸（三列网格每格 ~120dp，150px 足够清晰且解码更快）；
-    // memoryCacheKey 含 photoVersion → 缓存失效自动重载 Polaroid 版；
+    // 列表永远加载缩略图（几十 KB），不读 8MB 原图；缓存 key 用缩略图自身 lastModified，
+    // 与原图解耦 → 任何全局刷新（_photoVersion 变化）都不会让 Coil 重新解码全部缩略图。
     // crossfade(300) → 拍照后 addPolaroidFrame 完成时，GridPhotoCard 从占位 cell 切换过来，
-    // 图片从无到有 300ms 淡入，避免"格子突然有图"的视觉跳变
-    val request = remember(file, photoVersion) {
+    // 图片从无到有 300ms 淡入，避免"格子突然有图"的视觉跳变。
+    val thumb = remember(file) { PhotoStorage.thumbnailFor(file) }
+    val request = remember(thumb) {
         ImageRequest.Builder(context)
-            .data(file)
-            .size(150)
-            .memoryCacheKey("thumb_${file.path}_${file.lastModified()}")
+            .data(thumb)
+            .size(PhotoStorage.THUMB_SIZE)
+            .memoryCacheKey("thumb_${thumb.path}_${thumb.lastModified()}")
             .crossfade(300)
             .build()
     }

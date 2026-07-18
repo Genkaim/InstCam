@@ -438,7 +438,8 @@ private fun ThumbItem(file: File, selected: Boolean, isDark: Boolean, onClick: (
     }
     SubcomposeAsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
-            .data(file)
+            .data(PhotoStorage.thumbnailFor(file))
+            .size(PhotoStorage.THUMB_SIZE)
             .crossfade(300)
             .build(),
         contentDescription = null,
