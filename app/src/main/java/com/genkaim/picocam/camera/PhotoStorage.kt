@@ -288,6 +288,54 @@ object PhotoStorage {
         file
     }
 
+    /**
+     * 编辑器 CROP 页"旋转"参数：先把源图绕中心旋转 [degrees] 度，
+     * 再从旋转后的结果中心裁出最大正方形并缩放/裁切到合适尺寸返回。
+     * 不回收传入的 [src]（调用方负责），仅回收内部生成的旋转中间图。
+     */
+    fun rotateAndCropSquare(src: Bitmap, degrees: Float): Bitmap {
+        val rotated = if (degrees == 0f) {
+            src
+        } else {
+            val m = Matrix().apply { postRotate(degrees) }
+            Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        }
+        val side = if (rotated.width < rotated.height) rotated.width else rotated.height
+        val x = (rotated.width - side) / 2
+        val y = (rotated.height - side) / 2
+        val out = Bitmap.createBitmap(rotated, x, y, side, side)
+        // 仅当中间旋转图与源、与输出都不同时才回收（degrees==0 时 rotated===src，不可回收）
+        if (rotated !== src && rotated !== out) rotated.recycle()
+        return out
+    }
+
+    /**
+     * 编辑器 CROP 页裁切（经典 uCrop 模型）：照片旋转/缩放/平移，取景框固定 1:1。
+     * 参数（均为相对显示端、与分辨率无关）：
+     *  - [degrees] 照片旋转角度；[zoom] 照片缩放（1=取景框=整张照片，>1=取景框圈出子区域）；
+     *  - [panX]/[panY] 照片相对取景框中心的归一化平移（范围 ±(zoom-1)/2）。
+     * 实现：取景框即照片在 zoom=1 时的 Fit 正方形，故"取景框内区域"等价于对源图施加
+     *   R(degrees)·平移(pan) 后用矩阵绘制到 F×F 画布（F=B/zoom，避免放大时拉伸）。
+     */
+    fun cropFree(src: Bitmap, degrees: Float, zoom: Float, panX: Float, panY: Float): Bitmap {
+        val b = src.width
+        if (degrees == 0f && zoom <= 1.0001f && panX == 0f && panY == 0f) return src
+        val f = (b / zoom).roundToInt().coerceAtLeast(1)
+        // 取景框中心对应的源图坐标：照片平移 pan（正=向右/下）后，取景框中心采样到源图中心左侧 pan*b 处
+        val cx = b / 2f - panX * b
+        val cy = b / 2f - panY * b
+        val scale = f * zoom / b
+        val m = Matrix()
+        m.setTranslate(-cx, -cy)
+        m.postScale(scale, scale)
+        m.postRotate(degrees)
+        m.postTranslate(f / 2f, f / 2f)
+        val out = Bitmap.createBitmap(f, f, src.config ?: Bitmap.Config.ARGB_8888)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
+        Canvas(out).drawBitmap(src, m, paint)
+        return out
+    }
+
     /** 读取原图 EXIF 中的 GPS 相关字段（若存在），用于编辑后写回，保护位置信息。 */
     private fun readGpsTags(file: File): Map<String, String> = runCatching {
         val exif = ExifInterface(file.path)

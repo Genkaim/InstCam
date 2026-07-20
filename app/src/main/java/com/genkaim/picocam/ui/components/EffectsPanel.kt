@@ -448,7 +448,7 @@ fun EffectsPanel(
 }
 
 @Composable
-private fun TintSelector(
+internal fun TintSelector(
     modifier: Modifier = Modifier,
     tintState: TintState,
     isDark: Boolean = false,
@@ -520,7 +520,7 @@ private fun TintSelector(
 }
 
 @Composable
-private fun TintArrow(isLeft: Boolean, color: Color, onClick: () -> Unit) {
+internal fun TintArrow(isLeft: Boolean, color: Color, onClick: () -> Unit) {
     // 非圆形：宽度即图标宽度(14dp)，高度保留 32dp 作为点击热区（无背景、无圆形裁剪）
     Box(
         Modifier
@@ -545,7 +545,7 @@ private fun TintArrow(isLeft: Boolean, color: Color, onClick: () -> Unit) {
 
 /** 滤镜切换(TintSelector)横滑示意弹窗：显示当前滤镜名与 < > 方向提示。 */
 @Composable
-private fun TintHintBubble(
+internal fun TintHintBubble(
     tintState: TintState,
     isDark: Boolean = false,
     modifier: Modifier = Modifier,
@@ -574,9 +574,10 @@ private fun TintHintBubble(
 }
 
 @Composable
-private fun ColorSquare(
+internal fun ColorSquare(
     dotX: Float, dotY: Float,
     onDotChange: (Float, Float) -> Unit,
+    onDotChangeFinished: () -> Unit = {},
     warm: Boolean = false,
     cool: Boolean = false,
     enabled: Boolean = true,
@@ -748,6 +749,7 @@ private fun ColorSquare(
                         } finally {
                             // 松手：恢复大小、关闭径向、整行整列变亮、吸附到最近小点（视觉）
                             dotPressed = false
+                            onDotChangeFinished()
                         }
                     }
                 } else Modifier
@@ -777,7 +779,7 @@ private fun ColorSquare(
 }
 
 @Composable
-private fun FilterBtn(
+internal fun FilterBtn(
     name: String,
     active: Boolean,
     applied: Boolean,
@@ -907,7 +909,7 @@ internal fun SlideHintIcon(modifier: Modifier = Modifier, color: Color = Color(0
 
 /** 滤镜按钮右侧的小开关：带轨道色 + 旋钮色 + 位置过渡动效。 */
 @Composable
-private fun FilterSwitch(
+internal fun FilterSwitch(
     checked: Boolean,
     isDark: Boolean = false,
     onCheckedChange: () -> Unit,
@@ -943,7 +945,7 @@ private fun FilterSwitch(
 
 /** 有调色盘（暖色/冷色）滤镜的名字后方 logo：圆角小矩形，中空（仅描边、不填充）。 */
 @Composable
-private fun PaletteLogo(modifier: Modifier = Modifier, color: Color = Color(0xFF6B5744)) {
+internal fun PaletteLogo(modifier: Modifier = Modifier, color: Color = Color(0xFF6B5744)) {
     Box(
         modifier
             .size(11.dp)
@@ -953,7 +955,7 @@ private fun PaletteLogo(modifier: Modifier = Modifier, color: Color = Color(0xFF
 
 /** 横滑触发后浮于对应滤镜按钮正上方的“调节示意”：与按钮同形同大，深色填满代表参数百分比。 */
 @Composable
-private fun SlideHintBubble(intensity: Float, isDark: Boolean = false, modifier: Modifier = Modifier) {
+internal fun SlideHintBubble(intensity: Float, isDark: Boolean = false, modifier: Modifier = Modifier) {
     val pct = (intensity * 100f).roundToInt()
     val frac = intensity.coerceIn(0f, 1f)
     Box(
