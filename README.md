@@ -1,8 +1,12 @@
-# InstCam
-
-
-一款复古胶片风格的 Android 相机应用，用 Jetpack Compose 构建。
-
+<p align="center">
+  <a href="https://genkaim.top" target="blank">
+    <img src="/logo.png" alt="Logo" width="156" height="156">
+  </a>
+  <h2 align="center" style="font-weight: 600">InstCam</h2>
+  <p align="center">
+   一款拍立得风格的 Android 相机应用
+  </p>
+</p>
 
 ## 特色
 
