@@ -126,6 +126,9 @@ fun EffectsPanel(
     // 控制栏按钮外缘到屏幕边的距离（= “设置”钮左缘 / “X”钮右缘，= (屏宽-220)/6）。
     // 背景层铺满整屏，但调色盘左缘与滤镜列表右缘按此对齐，保持与上一版一致的按钮对齐
     val edgeInset = controlInset + 12.dp
+    // 调色盘靠右对齐后，右缘距屏幕中线留出的边距（与下方左半区 Box 的 padding(end) 共用，
+    // 保证满宽时调色盘左缘仍对齐"设置"钮、右缘距中线恰好此值）
+    val paletteRightPad = 12.dp
     // 面板可用高度（上下约束基准）：EffectsPanel 为 fillMaxSize 铺在相册 weight 区，容器高即预算。
     // 首帧尚未测得时用屏幕高兜底（仅首帧；且横向约束通常更紧，不会闪）。
     val screenH = LocalConfiguration.current.screenHeightDp
@@ -149,9 +152,11 @@ fun EffectsPanel(
     // 左侧固定高度（不含调色盘本身）：滑块 + 两段间距 + 切换滤镜区
     val leftFixedH = paletteSliderGap + sliderHeight + sliderFilterGap + tintSelH
     // 左右 / 上下 两条约束各自的允许最大值，取较小者；再夹到 [120,260] 保证可用性
-    val maxByWidth = (screenW.dp / 2f) - edgeInset
-    val maxByHeight = panelHDp - topPad - bottomPad - leftFixedH
-    val squareSide = (minOf(maxByWidth, maxByHeight) - bottomLift).coerceIn(120.dp, 260.dp)
+    // 左右约束：左侧对齐控制区左缘(edgeInset)，调色盘靠右对齐且右缘距中线留 paletteRightPad，
+    // 即 squareSide ≤ 屏宽/2 - edgeInset - paletteRightPad
+    val maxByWidth = (screenW.dp / 2f) - edgeInset - paletteRightPad
+    val maxByHeight = panelHDp - topPad - bottomPad - bottomLift - leftFixedH
+    val squareSide = minOf(maxByWidth, maxByHeight).coerceIn(120.dp, 260.dp)
     // 左侧总高（调色盘+滑块+切换区）；右侧参数列表高度据此反推，使左右总高一致
     val leftTotalH = squareSide + leftFixedH
     val listBoxH = (leftTotalH - listRestoreGap - restoreBtnH).coerceAtLeast(0.dp)
@@ -161,15 +166,10 @@ fun EffectsPanel(
     // 底部羽化高度（透明→半透背景色→不透明背景色），单一全宽元素，只负责底部这一区域；
     // 末端为不透明背景色，与左渐变叠在左下角时不会乘法发白
     val bottomFadeHeight = 56.dp
-    // 滤镜列表固定宽度 = 屏宽 - 调色盘宽 - 左右各对齐按钮的 inset - 间隔；与上一版对齐一致
-    // 调色盘出现/不出现用同一宽度，列表位置恒定
-    val filterListWidth = (
-        screenW.dp
-            - squareSide
-            - edgeInset
-            - paletteListGap
-            - edgeInset
-        ).coerceAtLeast(60.dp)
+    // 右侧参数区固定宽度 = 屏宽 50% - edgeInset(控制区 x 钮右缘到屏右缘距离) - 间隔(paletteListGap)。
+    // 配合主 Row 的 padding(end = edgeInset)，使参数列表 & 还原按钮右缘恰好对齐控制区右侧 x 钮。
+    // 列表左缘与左侧调色盘右缘之间天然留出 paletteListGap 间距。
+    val rightWidth = (screenW.dp / 2f - edgeInset - paletteListGap).coerceAtLeast(60.dp)
 
     // 横滑调节示意（弹窗）：记录各滤镜按钮位置/宽度，拖拽时在面板层叠加"同形按钮"示意（避免被列表裁剪）
     // 这些 map 改用普通可变容器（不再 mutableStateOf/StateMap），原因：
@@ -203,7 +203,7 @@ fun EffectsPanel(
                 // 无调色盘：左透明→右实色横向渐变（iOS 相册风）；渐变在 leftBgWidth 处到达实色、之后保持实色到最右，左右无缝。
                 // 关键：不要把“整块实色”与“左渐变”做成两层叠加——实色底上叠 Transparent→bg 渐变会看不见（底已全是 bg），
                 // 正确做法是让“背景本身”就是这层渐变，一层到底。
-                val leftBgWidth = edgeInset + squareSide + paletteListGap
+                val leftBgWidth = screenW.dp / 2f
                 val leftFrac = (leftBgWidth / screenW.dp).coerceIn(0f, 1f)
                 val aTransEnd = (leftFrac * 0.65f).coerceAtLeast(0.26f)
                 val aSolid = leftFrac.coerceAtLeast(aTransEnd + 0.001f)
@@ -248,16 +248,20 @@ fun EffectsPanel(
                             )
                         ),
                 )
-                Row(Modifier.fillMaxSize().padding(top = 12.dp)) {
-                    // ═══ 左侧：调色盘 + 强度滑块 + 滤镜切换（靠上排版）═══
+                // 右缘留出 edgeInset：右侧参数列表/还原按钮右缘对齐控制区右侧 x 钮；
+                // 底部留出 bottomLift：实现"菜单抬升"（替代从 squareSide 扣减，避免靠右对齐时左缘偏出"设置"钮）
+                Row(Modifier.fillMaxSize().padding(top = 12.dp, end = edgeInset, bottom = bottomLift)) {
+                    // ═══ 左侧：调色盘 + 强度滑块 + 滤镜切换（占左半区，靠右对齐）═══
                     val tintActive = tintState != TintState.NONE
                     val tintParams = when (tintState) {
                         TintState.WARM -> vm.filters["暖色"]
                         TintState.COOL -> vm.filters["冷色"]
                         TintState.NONE -> null
                     }
-                    Column(
-                        Modifier.padding(start = edgeInset).width(squareSide),
+                    // 左半区固定宽 = 屏宽 50%；调色盘靠右对齐（TopEnd → 右缘贴中线），宽受限时 squareSide=屏宽/2-edgeInset → 左缘恰对齐"设置"钮左缘
+                    Box(Modifier.width(screenW.dp / 2f).fillMaxHeight().padding(end = paletteRightPad)) {
+                        Column(
+                            Modifier.align(Alignment.TopEnd).width(squareSide),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Top,
                     ) {
@@ -323,13 +327,15 @@ fun EffectsPanel(
                         )
                     }
 
-                    // ═══ 右侧：参数列表（高度=左侧调色盘+滑块）+ 还原（高度=左侧切换），靠上排版 ═══
-                    Box(Modifier.weight(1f).fillMaxHeight()) {
-                        Row(Modifier.fillMaxSize().padding(end = edgeInset)) {
-                            Spacer(Modifier.width(paletteListGap))
-                            Spacer(Modifier.weight(1f))
-                            Column(
-                                Modifier.fillMaxHeight().width(filterListWidth).clip(RoundedCornerShape(20.dp)),
+                    }
+
+                    // 间隔：左侧调色盘与右侧参数区之间的留白
+                    Spacer(Modifier.width(paletteListGap))
+
+                    // ═══ 右侧：参数列表（右缘对齐控制区 x 钮）+ 还原，靠上排版（顶部与左侧调色盘齐平）═══
+                    Box(Modifier.width(rightWidth).fillMaxHeight()) {
+                        Column(
+                            Modifier.fillMaxHeight().width(rightWidth).clip(RoundedCornerShape(20.dp)),
                                 horizontalAlignment = Alignment.Start,
                                 verticalArrangement = Arrangement.Top,
                             ) {
@@ -369,7 +375,6 @@ fun EffectsPanel(
                                 // 还原：与左侧切换按钮同高度，靠上
                                 FilterBtn("还原", active = false, applied = false, showSwitch = false, onSelect = { vm.resetAll() }, onToggle = {}, isDark = isDark, textColor = RetroSoftRed)
                             }
-                        }
                     }
                 }
             }
@@ -467,7 +472,9 @@ private fun TintSelector(
     // 名称与 <> 图标字号随调色盘尺寸缩放（以 164dp 为基准 1.0），并夹在合理区间：
     // 保证两端箭头始终为完整圆形、名称不溢出，中间区随 squareSide 自然伸缩
     val scale = (squareSide / 164.dp).coerceIn(0.72f, 1.5f)
-    val nameSize = (16f * scale).sp
+    // 名称与 <> 图标字号随调色盘尺寸缩放（以 164dp 为基准 1.0），并夹在合理区间；
+    // 上限钉到 13.sp——与右侧参数调整文字字号一致，避免大屏上滤镜名比参数文字明显更大
+    val nameSize = (16f * scale).coerceAtMost(13f).sp
     Row(
         modifier
             .clip(RoundedCornerShape(22.dp))

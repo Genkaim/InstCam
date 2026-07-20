@@ -110,6 +110,8 @@ import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.time.Duration.Companion.milliseconds
 import android.graphics.BitmapFactory
 import com.genkaim.picocam.PhotoViewerActivity
 import com.genkaim.picocam.SettingsActivity
@@ -133,6 +135,9 @@ import com.genkaim.picocam.ui.theme.RetroRust
 import com.genkaim.picocam.ui.theme.onSurface
 import com.genkaim.picocam.ui.theme.onSurfaceSoft
 import com.genkaim.picocam.ui.theme.surfaceCard
+
+/** 白色快门闪屏动画时长（ms）。闪屏播放完后再开始取景框→灵动岛 morph，二者共用此常量保证时序一致。 */
+private const val SHUTTER_FLASH_MS = 150
 
 @Composable
 fun CameraScreen(vm: CameraViewModel = viewModel()) {
@@ -257,19 +262,22 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
         }
     }
 
-    // 取景框→灵动岛 morph 立即在快门按下时启动（captureStarted 在 CameraX 抓取前发射，
-    // 与按下快门对齐，不受机型拍照延迟影响）。仅动画路径在此处理；无动画路径留给 photoCaptured。
+    // 取景框→灵动岛 morph 在快门按下后启动（captureStarted 在 CameraX 抓取前发射，
+    // 与按下快门对齐，不受机型拍照延迟影响）。但先让白色快门闪屏播放完（SHUTTER_FLASH_MS），
+    // 再开始 morph——否则 transitionFile 置位会把 flashAlpha 强制归 0、闪屏被瞬间掐断、morph 与闪屏同时启动。
     LaunchedEffect(Unit) {
         vm.captureStarted.collect { file ->
             if (animating) return@collect
             animating = true
             effectsExpanded = false   // 拍照播放动画时隐藏效果区（若仍展开）
             if (anim.animEnabled) {
-                // 先把取景框快照到展开态，使过渡 overlay 的 morph 从展开态→灵动岛 视觉正确
-                progressState.floatValue = 1f
-                transitionFile = file
-                // 同时后台逐步把 progressState 收回到 0，过渡结束时取景框已是折叠态
+                // 先等白色闪屏动画播完，再开始取景框→灵动岛 morph
                 scope.launch {
+                    delay(SHUTTER_FLASH_MS.milliseconds)
+                    // 取景框快照到展开态，使过渡 overlay 的 morph 从展开态→灵动岛 视觉正确
+                    progressState.floatValue = 1f
+                    transitionFile = file
+                    // 后台逐步把 progressState 收回到 0，过渡结束时取景框已是折叠态
                     animate(progressState.floatValue, 0f, animationSpec = tween(durationMillis = 380)) { v, _ ->
                         progressState.floatValue = v
                     }
@@ -308,10 +316,16 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
 
     val flashAlpha = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        vm.shutterFlash.collect { flashAlpha.snapTo(0.9f); flashAlpha.animateTo(0f, tween(150)) }
+        vm.shutterFlash.collect { flashAlpha.snapTo(0.9f); flashAlpha.animateTo(0f, tween(SHUTTER_FLASH_MS)) }
     }
 
     val p = progressState.floatValue
+    // 拉开取景框（p 从 0 增大）初期模糊：约前 30% 内模糊，到 30% 完全清晰（cos 衰减，p=0 最糊、p=0.3 归零）。
+    val blurClearAt = 0.3f
+    val previewBlurPx = with(density) {
+        val f = if (p < blurClearAt) kotlin.math.cos(p / blurClearAt * (Math.PI.toFloat() / 2f)) else 0f
+        (18f * f).dp.toPx()
+    }
     // 操控区自然高度（px，unbounded 测得，与是否被裁切无关）；给个初值≈200dp 避免首帧塌陷
     var ctrlNaturalPx by remember { mutableStateOf((200 * densityPx).roundToInt()) }
     // 跟手行程：手指位移 dragRangePx 对应 progress 走完 0↔1（可调节手感）
@@ -499,6 +513,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 bindCameraUseCases = vm::bindCameraUseCases,
                 flashAlpha = if (transitionFile == null) flashAlpha.value else 0f,
                 eff = vm.effective,
+                previewBlur = previewBlurPx,
                 cornerDp = fCorner,
                 borderDp = borderDp.toFloat(),
                 onPreviewStreaming = vm::onPreviewStreaming,
@@ -626,6 +641,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     isDark = isDark,
                                     selectionMode = selectionMode,
                                     isSelected = isSelected,
+                                    isNewest = file == photos.first(),
                                     onClick = {
                                         if (selectionMode) {
                                             if (isSelected) selectedPhotos.remove(file) else selectedPhotos.add(file)
@@ -874,6 +890,7 @@ private fun GridPhotoCard(
     isDark: Boolean,
     selectionMode: Boolean,
     isSelected: Boolean,
+    isNewest: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -899,6 +916,11 @@ private fun GridPhotoCard(
             .crossfade(300)
             .build()
     }
+    // 圆角边框：仅【最新落入相册第一张】的照片首次出现时从 0 渐入（enterAlpha），与缩略图 crossfade 配合，
+    // 避免"打印后照片落入相册时边框瞬间出现"的视觉跳变；选中态基础透明度(selBase)即时切换，不与进入动画耦合。
+    val enterAlpha = remember { Animatable(if (isNewest) 0f else 1f) }
+    LaunchedEffect(Unit) { if (isNewest) enterAlpha.animateTo(1f, tween(durationMillis = 250, easing = LinearEasing)) }
+    val selBase = if (isSelected) 1f else 0.3f
     Box(
         Modifier
             .aspectRatio(fileRatio)
@@ -906,7 +928,7 @@ private fun GridPhotoCard(
             .background(if (isSelected) RetroRust.copy(alpha = 0.35f) else surfaceCard(isDark))
             .border(
                 width = if (isSelected) 2.dp else 1.dp,
-                color = if (isSelected) RetroCream else onSurfaceSoft(isDark).copy(alpha = 0.3f),
+                color = (if (isSelected) RetroCream else onSurfaceSoft(isDark)).copy(alpha = selBase * enterAlpha.value),
                 shape = RoundedCornerShape(4.dp),
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),

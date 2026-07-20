@@ -8,6 +8,7 @@ import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -159,6 +160,7 @@ fun CaptureTransitionOverlay(
     val densityPx = density.density
 
     var showDetail by remember { mutableStateOf(false) }
+    var showButtons by remember { mutableStateOf(false) }   // 底部按钮显隐：放大完成后才渐入，关闭时渐出（与打印/放大解耦，渐入才看得清）
     var showPhoto by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf(false) }      // 仅关闭淡出阶段为 true（打印/grow/详情展示期均为 false → 照片保持可见）
     var flying by remember { mutableStateOf(false) }        // 照片飞入相册阶段为 true（此时不淡出照片，而是飞入）
@@ -192,8 +194,9 @@ fun CaptureTransitionOverlay(
         if (!showDetail || closing) return
         closing = true
         showDetail = false  // scrim 淡出，露出相册照片
+        showButtons = false  // 底部按钮渐出（见 AnimatedVisibility 条件）
         onDetailState(false)  // 模糊淡出
-        // 按钮通过 closing 标记隐藏（见 AnimatedVisibility 条件）
+        // 按钮通过 showButtons 标记渐出（见 AnimatedVisibility 条件）
         scope.launch {
             // 预览结束后才把照片加入相册（同步刷新 + 设占位），等网格布局完成再飞入
             if (!addedToAlbum) {
@@ -294,7 +297,8 @@ fun CaptureTransitionOverlay(
         emit.animateTo(1f, tween(durationMillis = 1700, easing = PrinterEasing))  // ⑤ 打印
         showDetail = true                                                         // ⑥ 背景进入模糊/预览模式
         onDetailState(true)
-        grow.animateTo(1f, tween(durationMillis = 450))                         // ⑦ 照片放大（开始过渡到正中央）
+        showButtons = true                                                       // ⑦ 照片开始放大即触发按钮渐入（与放大同步，不滞后、不被打印掩盖）
+        grow.animateTo(1f, tween(durationMillis = 450))                         // ⑧ 照片放大（开始过渡到正中央）
         // ★ 占位时机：grow 完成（照片完全过渡到正中央）后调用 onAddToAlbum
         // 时机原因：打印动画（emit）期间相册冻结；照片刚开始放大时相册也冻结；
         // 只有照片完全到达中央后才让相册看到新文件 + 占位 cell（用户此时已被 overlay 遮挡，看不到相册变化）。
@@ -304,6 +308,9 @@ fun CaptureTransitionOverlay(
         shrink.animateTo(1f, tween(durationMillis = 320))                        // ⑧ 加长版岛过渡回正常长度
         // ⑨ 自动展开取景框在 close() 中飞入动画完成后触发（progressState 全程不变）
     }
+
+    // 系统级返回（手势/物理键）：预览展示期拦截并平滑关闭（按钮渐出 + 照片飞入相册），而非 finish 相机 Activity
+    BackHandler(enabled = showDetail && !closing) { close() }
 
     val lerp = { a: Float, b: Float, t: Float -> a + (b - a) * t }
     val m = morph.value        // 取景框 → 设置岛
@@ -396,7 +403,7 @@ fun CaptureTransitionOverlay(
                 Modifier
                     .fillMaxSize()
                     .background(if (isDark) Color(0xFF242424) else monetColor)
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() },
+                    .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { close() },
             ) {
                 if (isDark) {
                     // 深色：与 PhotoViewerActivity 完全一致——底色 RetroDarkBg + 莫奈色淡显 + 灰遮罩（移除多余的 scrimColor 层）
@@ -451,7 +458,7 @@ fun CaptureTransitionOverlay(
                         .fillMaxWidth()
                         .padding(24.dp)
                         .aspectRatio(photoRatio)
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { }
+                        .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { }
                         .onGloballyPositioned { coords ->
                             val topLeft = coords.localToRoot(Offset.Zero)
                             photoLeftPx = topLeft.x
@@ -500,20 +507,23 @@ fun CaptureTransitionOverlay(
             )
         }
 
-        // 放大完成后：照片正下方的三个按钮（保存/分享/删除）；closing 时立即隐藏，背景保持
-        AnimatedVisibility(
-            visible = showDetail && !closing,
-            enter = fadeIn(tween(250)) + slideInVertically(animationSpec = tween(250), initialOffsetY = { it / 2 }),
-            exit = fadeOut(tween(250)) + slideOutVertically(animationSpec = tween(250), targetOffsetY = { it / 2 }),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            val desiredY = photoBottomPx + 12f * densityPx - detailUpPx
-            val clampedY = min(desiredY, screenHpx - btnRowHpx - 8f * densityPx)
-            Row(
-                Modifier
-                    .offset { IntOffset(0, clampedY.toInt()) }
-                    .fillMaxWidth()
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { },   // 按钮行整个区域 consume，避免点到背景误关
+        // 照片正下方三键（保存/分享/删除）：showButtons 驱动手动渐入/渐出（仅 alpha，淡入即可，不上滑）
+        val btnAlpha = remember { Animatable(0f) }
+        LaunchedEffect(showButtons) {
+            if (showButtons) {
+                btnAlpha.animateTo(1f, tween(400))
+            } else {
+                btnAlpha.animateTo(0f, tween(240))
+            }
+        }
+        val desiredY = photoBottomPx + 12f * densityPx - detailUpPx
+        val clampedY = min(desiredY, screenHpx - btnRowHpx - 8f * densityPx)
+        Row(
+            Modifier
+                .offset { IntOffset(0, clampedY.toInt()) }
+                .fillMaxWidth()
+                .graphicsLayer { alpha = btnAlpha.value }
+                .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { },   // 按钮行整个区域 consume（仅按钮可见时），避免点到背景误关
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -523,7 +533,7 @@ fun CaptureTransitionOverlay(
                         .height(56.dp).width(128.dp)
                         .clip(RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp, topEnd = 6.dp, bottomEnd = 6.dp))
                         .background(capsuleBg)
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                        .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) {
                             scope.launch {
                                 saveToGallery(context, file)
                                 Toast.makeText(context, "已保存到系统相册", Toast.LENGTH_SHORT).show()
@@ -544,7 +554,7 @@ fun CaptureTransitionOverlay(
                         .height(56.dp).width(128.dp)
                         .clip(RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp, topEnd = 28.dp, bottomEnd = 28.dp))
                         .background(capsuleBg)
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { scope.launch { shareImage(context, file) } },
+                        .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { scope.launch { shareImage(context, file) } },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
@@ -560,13 +570,12 @@ fun CaptureTransitionOverlay(
                         .size(56.dp)
                         .clip(CircleShape)
                     .background(btnDelBg)
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { if (file.delete()) { deleted = true; close() } },
+                    .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { if (showButtons && file.delete()) { deleted = true; close() } },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.Delete, contentDescription = "删除", tint = btnDelIcon)
                 }
             }
-        }
     }
 }
 
@@ -614,7 +623,7 @@ private suspend fun shareImage(context: Context, file: File) {
 /**
  * 从照片解码小图并用 Palette 取主色（逻辑同 PhotoViewerActivity.extractDominantColor）。
  * 先 inJustDecodeBounds 读尺寸、按目标(~256px)算 inSampleSize，再解码小图 → Palette，控制耗时；
- * 返回 LightMuted 主色（柔和不刺眼），失败回退 fallback。
+ * 以官方「Muted（低饱和）」色板为主，背景为柔和淡彩，失败回退 fallback。
  */
 private suspend fun extractDominantColor(file: File, fallback: Int): Int = withContext(Dispatchers.IO) {
     try {
@@ -628,19 +637,13 @@ private suspend fun extractDominantColor(file: File, fallback: Int): Int = withC
         val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
         val palette = Palette.from(bm).generate()
         bm.recycle()
-        // 取色策略：getLightVibrantColor 为主（取亮色主调），getDominantColor 为 fallback（屏幕照片等无 light vibrant swatch 时退到最显著色）
-        // 之前用 getDominantColor 对夕阳照片会取到暗色建筑轮廓（dominant = 最频繁色 = 建筑剪影）→ 背景变深棕
-        // getLightVibrantColor 优先取亮色（夕阳天空、屏幕白底等），对各种照片都能取到反映主题的亮色
-        palette.getLightVibrantColor(palette.getDominantColor(fallback))
+        // 取色策略（官方 Palette 指导）：以低饱和的 Muted 色板为主，getLightMutedColor 优先取柔和亮色主调，
+        // 退到 Muted → LightVibrant → Dominant。原 getLightVibrantColor 饱和度过高（背景刺眼），
+        // 改 Muted 系列后背景为低饱和柔色，更符合"莫奈"淡彩且不与照片抢色。
+        palette.getLightMutedColor(
+            palette.getMutedColor(
+                palette.getLightVibrantColor(palette.getDominantColor(fallback))
+            )
+        )
     } catch (_: Exception) { fallback }
-}
-
-/** 去色：将颜色向等亮度灰度混合 factor 比例，得到柔和的"莫奈"低饱和背景色。 */
-private fun desaturate(argb: Int, factor: Float): Int {
-    val r = AndroidColor.red(argb); val g = AndroidColor.green(argb); val b = AndroidColor.blue(argb)
-    val gray = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-    val nr = (r + (gray - r) * factor).toInt().coerceIn(0, 255)
-    val ng = (g + (gray - g) * factor).toInt().coerceIn(0, 255)
-    val nb = (b + (gray - b) * factor).toInt().coerceIn(0, 255)
-    return AndroidColor.argb(255, nr, ng, nb)
 }

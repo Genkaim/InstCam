@@ -21,12 +21,13 @@ data class FilterParams(
 data class EffectiveFilter(
     val grayscale: Float = 0f,  // 0~1  （黑白）
     val vignette: Float = 0f,   // 0~1  （暗角）
-    val exposure: Float = 0f,   // -1~1 （亮度 + 正方形明暗）
+    val exposure: Float = 0f,   // -1~1 （曝光，2^exposure 乘法）
     val warmth: Float = 0f,     // -1~1 （暖色正 / 冷色负）
-    val saturation: Float = 0f, // -1~1 （正方形鲜艳度）
+    val saturation: Float = 0f, // -1~1 （饱和度，setSaturation(1+s)）
+    val brightness: Float = 0f, // -1~1 （亮度，线性乘法 1+brightness）
 ) {
     fun isIdentity(): Boolean =
-        grayscale == 0f && vignette == 0f && exposure == 0f && warmth == 0f && saturation == 0f
+        grayscale == 0f && vignette == 0f && exposure == 0f && warmth == 0f && saturation == 0f && brightness == 0f
 }
 
 /** 滤镜的固定顺序（与 UI 列表一致）。 */

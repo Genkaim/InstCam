@@ -242,8 +242,66 @@ object PhotoStorage {
         return out
     }
 
+    /**
+     * 裁掉拍立得白边，返回内正方形 Bitmap（无边框），供编辑器在编辑态展示/处理。
+     * 边框由 addPolaroidFrame 按 `filtered.width * 0.06` 计算，故满图宽 W 与边距关系为 边距 ≈ 0.0536·W；
+     * 这里用略大的 0.054·W 反推并裁切，保证白边被完全去掉（多裁 <1px 照片内容，不可见）。
+     */
+    fun cropInnerSquare(file: File): Bitmap? = runCatching {
+        val src = decodeSampled(file.path) ?: return@runCatching null
+        val w = src.width
+        val borderCrop = (w * 0.054f).roundToInt().coerceAtLeast(1)
+        val side = (w - 2 * borderCrop).coerceAtLeast(1)
+        val sq = Bitmap.createBitmap(src, borderCrop, borderCrop, side, side)
+        src.recycle()
+        sq
+    }.getOrNull()
+
+    /**
+     * 编辑器保存：对无边框正方形 [square] 应用滤镜、加回拍立得白边并写回 [file]（覆盖原图），
+     * 同时更新缩略图、保留原图 GPS（addPolaroidFrame 仅在显式传 location 时写 GPS，编辑态从原文件继承）。
+     */
+    suspend fun reencodeWithFrame(context: Context, file: File, square: Bitmap, eff: EffectiveFilter): File = withContext(Dispatchers.IO) {
+        try {
+            val gps = readGpsTags(file)   // 先读原图 GPS，待写回
+            val filtered = applyFilterToBitmap(square, eff)
+            val border = (filtered.width * 0.06f).toInt().coerceAtLeast(16)
+            val bottom = border * 6
+            val w = filtered.width + border * 2
+            val h = filtered.height + border + bottom
+            val bm = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bm)
+            canvas.drawColor(Color.WHITE)
+            canvas.drawBitmap(filtered, border.toFloat(), border.toFloat(), null)
+            filtered.recycle()
+            FileOutputStream(file).use { out -> bm.compress(Bitmap.CompressFormat.JPEG, 95, out) }
+            // 用内存 bm 直接生成缩略图（避免再次解码刚写好的文件），与 addPolaroidFrame 一致
+            saveThumbnailFromBitmap(bm, thumbnailFileFor(file), THUMB_SIZE)
+            bm.recycle()
+            try {
+                val exif = ExifInterface(file.path)
+                exif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+                gps.forEach { (k, v) -> exif.setAttribute(k, v) }
+                exif.saveAttributes()
+            } catch (_: Exception) {}
+        } catch (_: Exception) {}
+        file
+    }
+
+    /** 读取原图 EXIF 中的 GPS 相关字段（若存在），用于编辑后写回，保护位置信息。 */
+    private fun readGpsTags(file: File): Map<String, String> = runCatching {
+        val exif = ExifInterface(file.path)
+        listOf(
+            ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF,
+            ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
+            ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF,
+            ExifInterface.TAG_GPS_TIMESTAMP, ExifInterface.TAG_GPS_DATESTAMP,
+            ExifInterface.TAG_GPS_PROCESSING_METHOD,
+        ).mapNotNull { k -> exif.getAttribute(k)?.let { v -> k to v } }.toMap()
+    }.getOrDefault(emptyMap())
+
     /** 从照片文件提取主色（莫奈取色）。与 PhotoViewerActivity 逻辑完全一致：
-     *  缩小到 ~256px → Palette → getLightVibrantColor(getDominantColor(fallback))。 */
+     *  缩小到 ~256px → Palette → 低饱和 Muted 色板（getLightMutedColor 优先，退 Muted→LightVibrant→Dominant）。 */
     suspend fun extractDominantColor(file: File, fallback: Int): Int = withContext(Dispatchers.IO) {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -256,7 +314,12 @@ object PhotoStorage {
             val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
             val palette = Palette.from(bm).generate()
             bm.recycle()
-            palette.getLightVibrantColor(palette.getDominantColor(fallback))
+            // 官方 Palette 指导：Muted 系列为低饱和色板，背景柔和淡彩，不与照片抢色。
+            palette.getLightMutedColor(
+                palette.getMutedColor(
+                    palette.getLightVibrantColor(palette.getDominantColor(fallback))
+                )
+            )
         } catch (_: Exception) { fallback }
     }
 }

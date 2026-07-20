@@ -23,6 +23,8 @@ fun buildFilterColorMatrix(eff: EffectiveFilter): ColorMatrix {
         val f = 2.0.pow(eff.exposure.toDouble()).toFloat()
         cm.postConcat(scaleMatrix(f))
     }
+    // 亮度：线性乘法（1+brightness），与曝光（指数）区分，作为第二档整体明暗调节
+    if (eff.brightness != 0f) cm.postConcat(scaleMatrix((1f + eff.brightness).coerceAtLeast(0f)))
     // 色温：shader 为 color.r += uWarmth*0.15 / color.b -= uWarmth*0.15（加性）——须在饱和度之前
     if (eff.warmth != 0f) cm.postConcat(warmthMatrix(eff.warmth))
     // 饱和度：shader 为 mix(luma, color, 1+uSaturation)；ColorMatrix.setSaturation(1+s) 等价
