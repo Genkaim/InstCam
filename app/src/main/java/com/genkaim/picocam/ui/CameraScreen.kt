@@ -73,12 +73,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -320,11 +323,12 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     }
 
     val p = progressState.floatValue
-    // 拉开取景框（p 从 0 增大）初期模糊：约前 30% 内模糊，到 30% 完全清晰（cos 衰减，p=0 最糊、p=0.3 归零）。
-    val blurClearAt = 0.3f
+    // 拉开取景框（p 从 0 增大）初期模糊：前 40% 内模糊，到 40% 完全清晰（cos 衰减，p=0 最糊、p=0.4 归零）。
+    // 模糊半径 28dp（加大模糊行程，拉开时更明显的温润虚化过渡）。
+    val blurClearAt = 0.4f
     val previewBlurPx = with(density) {
         val f = if (p < blurClearAt) kotlin.math.cos(p / blurClearAt * (Math.PI.toFloat() / 2f)) else 0f
-        (18f * f).dp.toPx()
+        (28f * f).dp.toPx()
     }
     // 操控区自然高度（px，unbounded 测得，与是否被裁切无关）；给个初值≈200dp 避免首帧塌陷
     var ctrlNaturalPx by remember { mutableStateOf((200 * densityPx).roundToInt()) }
@@ -585,8 +589,13 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
 
             // 剩余区域：相册（底层）+ 效果面板（悬浮层），weight(1f) 吸收全部高度变化（折叠时相册占满）
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (photos.isEmpty()) {
-                    // 空相册占位：整块可竖向拖拽（无列表可滚动，故直接用拖拽切换展开/折叠）
+                // 空相册占位：照片加载出来后用 fadeOut 渐出（而非瞬间消失）。
+                // 用完全限定 androidx.compose.animation.AnimatedVisibility 避免解析到外层 ColumnScope 的扩展。
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = photos.isEmpty(),
+                    enter = fadeIn(tween(300)),
+                    exit = fadeOut(tween(300)),
+                ) {
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -604,7 +613,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                             Text("长按照片可以批量编辑", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
                         }
                     }
-                } else {
+                }
+                if (photos.isNotEmpty()) {
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Fixed(3), contentPadding = PaddingValues(top = 44.dp, bottom = 12.dp, start = 12.dp, end = 12.dp),
@@ -919,18 +929,16 @@ private fun GridPhotoCard(
     // 圆角边框：仅【最新落入相册第一张】的照片首次出现时从 0 渐入（enterAlpha），与缩略图 crossfade 配合，
     // 避免"打印后照片落入相册时边框瞬间出现"的视觉跳变；选中态基础透明度(selBase)即时切换，不与进入动画耦合。
     val enterAlpha = remember { Animatable(if (isNewest) 0f else 1f) }
-    LaunchedEffect(Unit) { if (isNewest) enterAlpha.animateTo(1f, tween(durationMillis = 250, easing = LinearEasing)) }
-    val selBase = if (isSelected) 1f else 0.3f
+    LaunchedEffect(Unit) { if (isNewest) enterAlpha.animateTo(1f, tween(durationMillis = 150, easing = LinearEasing)) }
+    val selBase = if (isSelected) 1f else if (isDark) 0.8f else 0.3f
+    val borderColor = (if (isSelected) RetroCream else onSurfaceSoft(isDark)).copy(alpha = selBase * enterAlpha.value)
+    val borderWidthDp = if (isSelected) 2.dp else 1.dp
+    val borderShape = RoundedCornerShape(4.dp)
     Box(
         Modifier
             .aspectRatio(fileRatio)
-            .clip(RoundedCornerShape(4.dp))
+            .clip(borderShape)
             .background(if (isSelected) RetroRust.copy(alpha = 0.35f) else surfaceCard(isDark))
-            .border(
-                width = if (isSelected) 2.dp else 1.dp,
-                color = (if (isSelected) RetroCream else onSurfaceSoft(isDark)).copy(alpha = selBase * enterAlpha.value),
-                shape = RoundedCornerShape(4.dp),
-            )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
         // 用 AsyncImage 替代 SubcomposeAsyncImage：避免子组合（subcomposition）开销，
@@ -954,6 +962,20 @@ private fun GridPhotoCard(
                     .border(1.5.dp, if (isSelected) RetroCream else Color(0x88FFFFFF), CircleShape),
             )
         }
+        // 边框：作为最末尾 child，确保在所有 content 之上
+        // 关键：之前用 Modifier.border 会被 dark overlay 等 content 覆盖（即使 drawWithContent 也可能因 state 订阅时机不对不重绘），
+        // 放在 Box content 内最末尾、用 Modifier.drawWithContent 直接画在 inner Box 上，确保在所有 sibling 之上。
+        Box(
+            Modifier
+                .matchParentSize()
+                .drawWithContent {
+                    drawRoundRect(
+                        color = borderColor,
+                        style = Stroke(width = borderWidthDp.toPx()),
+                        cornerRadius = CornerRadius(4.dp.toPx()),
+                    )
+                }
+        )
     }
 }
 
@@ -997,11 +1019,18 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, isDark: 
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                if (hasLocation) "✓ 定位已授权" else "授予定位权限（照片记录位置）",
+                if (hasLocation) "✓ 定位已授权" else "授予定位权限",
                 style = MaterialTheme.typography.titleMedium,
                 color = if (hasLocation) onSurface(isDark) else RetroCream,
             )
         }
+        Text(
+            "用于记录照片位置",
+            style = MaterialTheme.typography.titleMedium,
+            fontSize = 13.sp,
+            color = onSurface(isDark),
+            modifier = Modifier.padding(top = 14.dp),
+        )
 
         // 两个权限都授予后，稍等一下自动进入引导设置（不再需要手动点击"下一步"）
         if (hasCamera && hasLocation) {

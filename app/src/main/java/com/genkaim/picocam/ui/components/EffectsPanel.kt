@@ -521,16 +521,16 @@ internal fun TintSelector(
 
 @Composable
 internal fun TintArrow(isLeft: Boolean, color: Color, onClick: () -> Unit) {
-    // 非圆形：宽度即图标宽度(14dp)，高度保留 32dp 作为点击热区（无背景、无圆形裁剪）
+    // 加大点击热区与图标尺寸（需求⑨）
     Box(
         Modifier
-            .width(14.dp)
-            .height(32.dp)
+            .width(30.dp)
+            .height(48.dp)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(14.dp, 14.dp)) {
-            val s = 2.dp.toPx()
+        Canvas(Modifier.size(24.dp, 24.dp)) {
+            val s = 3.dp.toPx()
             val cy = size.height / 2f
             if (isLeft) {
                 drawLine(color, Offset(size.width * 0.62f, cy - size.height * 0.32f), Offset(size.width * 0.38f, cy), strokeWidth = s, cap = StrokeCap.Round)
@@ -593,7 +593,9 @@ internal fun ColorSquare(
         val mp = with(density) { GRID_MARGIN_DP.toPx() }
         val sp = with(density) { GRID_SPACING_DP.toPx() }
         val draw = (sizePx - mp * 2f).coerceAtLeast(sp)
-        return ((draw / sp).roundToInt() + 1).coerceIn(MIN_GRID_DOTS, MAX_GRID_DOTS)
+        // 取奇数个点，使大点(选中点)初始能落在正中心网格（需求⑨）
+        val n = ((draw / sp).roundToInt() + 1).coerceIn(MIN_GRID_DOTS, MAX_GRID_DOTS)
+        return if (n % 2 == 0) n + 1 else n
     }
     // 大点外圈半径：拖拽/显示范围仅保留这一圈边距，使大点可触达网格(留白22dp)的全部位置，且始终完整可见
     val dotEdgeInsetPx = with(density) { 11.dp.toPx() }

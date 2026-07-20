@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
+import android.graphics.Rect
 import android.location.Address
 import android.location.Geocoder
 import android.os.Build
@@ -42,7 +43,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.lazy.LazyRow
@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.outlined.LocationOff
@@ -89,6 +90,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
@@ -101,6 +103,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.toArgb
@@ -112,12 +115,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
+import androidx.compose.ui.viewinterop.AndroidView
+import com.canhub.cropper.CropImageView
+import com.canhub.cropper.CropImageOptions
 import com.genkaim.picocam.ui.theme.RetroBrown
 import com.genkaim.picocam.ui.theme.RetroCream
 import com.genkaim.picocam.ui.theme.RetroDarkBg
@@ -141,6 +146,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
+import kotlin.math.sin
 
 private fun formatPhotoTime(timestamp: Long): String {
     val sdf = SimpleDateFormat("yyyy/MM/dd  HH:mm", Locale.getDefault())
@@ -224,6 +235,10 @@ private suspend fun extractDominantColor(file: File, fallback: Int): Int = withC
     } catch (_: Exception) { fallback }
 }
 
+/** 原图备份路径：同目录、扩展名前加 .orig（用于非破坏式编辑复原，需求②）。 */
+private fun origBackupOf(file: File): File =
+    File(file.parent, "${file.nameWithoutExtension}.orig.${file.extension}")
+
 private fun textColorForBg(argb: Int): Color {
     val luminance = (0.299 * AndroidColor.red(argb) + 0.587 * AndroidColor.green(argb) + 0.114 * AndroidColor.blue(argb)) / 255.0
     return if (luminance > 0.5) RetroBrown else RetroCream
@@ -306,6 +321,8 @@ private fun PhotoViewerContent(startFile: File, onDismiss: () -> Unit, onDelete:
     // —— 编辑器状态（统一用 EditState 快照，便于撤销/重做）——
     var editing by remember { mutableStateOf(false) }
     var workBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    // CanHub 裁切视图句柄（CROP 页内嵌的 CropImageView），供保存时取裁切结果
+    var cropViewState = remember { mutableStateOf<CropImageView?>(null) }
     // 编辑控件（进入编辑时复位为中性，让用户从零调整）；所有可调项都收进 EditState
     var editState by remember { mutableStateOf(EditState()) }
     var imageVersion by remember { mutableIntStateOf(0) }
@@ -359,11 +376,20 @@ private fun PhotoViewerContent(startFile: File, onDismiss: () -> Unit, onDelete:
     }
     /** 保存编辑：对无边框图应用滤镜（含旋转裁方）并重新加回拍立得白边写回原文件，刷新预览缓存与主色。 */
     fun saveEdit() {
+        val view = cropViewState.value ?: run {
+            // 没有裁切视图（理论上不会发生）→ 直接退出编辑
+            editing = false
+            return
+        }
         val sq = workBitmap ?: return
+        // 非破坏式：首次保存前备份原图（带框）到同目录 .orig 副本，便于复原（需求②）
+        val backup = origBackupOf(currentFile)
+        if (!backup.exists()) { try { currentFile.copyTo(backup, overwrite = false) } catch (_: Exception) {} }
         scope.launch {
             val s = editState
-            // 裁切/旋转：自定义裁切（图像变换 + 固定 1:1 取景框）→ 统一经矩阵旋转/缩放/平移裁方
-            val base = PhotoStorage.cropFree(sq, s.rotation, s.cropZoom, s.panX, s.panY)
+            // 裁切/旋转由 CanHub CropImageView 内部完成，getCroppedImage 直接得到 1:1 结果
+            val cropped = view.getCroppedImage()
+            val base = cropped ?: sq
             // 滤镜状态合成：暖/冷色取色盘位置额外贡献到饱和度/亮度（叠加在调节滑块之上）
             val tintSatC = if (s.tint != TintState.NONE) (s.tintSat - 0.5f) * 2f else 0f
             val tintBriC = if (s.tint != TintState.NONE) (s.tintBri - 0.5f) * 2f else 0f
@@ -375,7 +401,7 @@ private fun PhotoViewerContent(startFile: File, onDismiss: () -> Unit, onDelete:
                 saturation = (s.sat - 0.5f) * 2f + tintSatC,
                 brightness = (s.bri - 0.5f) * 2f + tintBriC,
             ))
-            if (base !== sq) base.recycle()
+            if (cropped != null && cropped !== sq) cropped.recycle()
             sq.recycle()
             workBitmap = null
             editing = false
@@ -566,6 +592,14 @@ private fun PhotoViewerContent(startFile: File, onDismiss: () -> Unit, onDelete:
                 canRedo = historyIndex < history.size - 1,
                 onCancel = { exitEdit() },
                 onSave = { saveEdit() },
+                onRestoreOriginal = {
+                    // 用首次保存前备份的原图覆盖当前文件，刷新预览后退出编辑（需求②）
+                    val b = origBackupOf(currentFile)
+                    if (b.exists()) { b.copyTo(currentFile, overwrite = true) }
+                    imageVersion++
+                    exitEdit()
+                },
+                cropViewState = cropViewState,
                 frameFile = currentFile,
                 bitmap = workBitmap!!,
                 isDark = isDark,
@@ -596,7 +630,7 @@ private enum class EditorTab { CROP, ADJUST, FILTER }
 /**
  * 编辑器完整状态快照：撤销/重做只需整体替换此对象。
  * 包含所有可调项：当前页 / 冷暖色调 / 取色盘位置(tintSat,tintBri) / 各滤镜开关与强度 /
- * 调节滑块 / 旋转角度 / 裁切拖拽偏移。
+ * 调节滑块 / 旋转角度。裁切手势由 CanHub CropImageView 内部接管（不进快照）。
  */
 private data class EditState(
     val tab: EditorTab = EditorTab.CROP,
@@ -612,9 +646,6 @@ private data class EditState(
     val bri: Float = 0.5f,
     val sat: Float = 0.5f,
     val rotation: Float = 0f,
-    val cropZoom: Float = 1f,       // 裁切页：照片缩放（图像变换，1=占满取景框；>1 放大=取景框圈出子区域），范围 1..4
-    val panX: Float = 0f,           // 裁切页：照片平移（相对取景框边长的归一化偏移 X；取景框本身固定不动）
-    val panY: Float = 0f,
 )
 
 /**
@@ -636,6 +667,8 @@ private fun PhotoEditorOverlay(
     canRedo: Boolean,
     onCancel: () -> Unit,
     onSave: () -> Unit,
+    onRestoreOriginal: () -> Unit,
+    cropViewState: MutableState<CropImageView?>,
     frameFile: File,
     bitmap: Bitmap,
     isDark: Boolean,
@@ -668,10 +701,18 @@ private fun PhotoEditorOverlay(
     //  1) 画面先呈现"带白框原图"(framedAlpha=1)，随后白框淡出(framedAlpha 1→0)，无边框方图交叉淡入(photoAlpha 0→1)
     //  2) 白框消失后，中心正方形照片"微微放大"(enterScale 0.9→1)
     //  3) 放大过程中，裁切白框(cropAlpha)、顶栏(topAlpha)、底部菜单(bottomAlpha/bottomOffset) 同步浮现
+    // 进入过渡（分三段）：
+    //  1) 带白框原图先稳定显示（待加载完成，避免"闪一下"），随后淡出；无边框方图交叉淡入
+    //  2) 白框消失后，中心正方形照片"微微放大"(enterScale 0.9→1)
+    //  3) 放大过程中，裁切白框(cropAlpha)、顶栏、底部菜单同步浮现
     val enterScale = remember { Animatable(0.9f) }
     val framedAlpha = remember { Animatable(1f) }
     val photoAlpha = remember { Animatable(0f) }
     val cropAlpha = remember { Animatable(0f) }
+    val contentAlpha = remember { Animatable(1f) }       // 整个编辑层退出时整体渐出（需求⑦）
+    // 切页平滑过渡：CROP / FILTER 两页照片始终挂载并交叉淡入淡出（避免重建 CropImageView 的闪动，需求⑧）
+    val cropPageAlpha by animateFloatAsState(if (state.tab == EditorTab.CROP) 1f else 0f, tween(220), label = "cropPage")
+    val photoPageAlpha by animateFloatAsState(if (state.tab == EditorTab.CROP) 0f else 1f, tween(220), label = "photoPage")
     // 顶栏 / 底栏 进入、离场动画（Animatable）
     val topAlpha = remember { Animatable(0f) }
     val bottomAlpha = remember { Animatable(0f) }
@@ -679,11 +720,14 @@ private fun PhotoEditorOverlay(
     var leaving by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var showDiscard by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        // 1) 带白框原图淡出 + 无边框方图交叉淡入（画面里照片不闪断）
+    var framedReady by remember { mutableStateOf(false) }   // 带框原图是否加载完成
+    // 旋转滑块当前角度（CROP 页）：直接驱动 CropImageView.rotateImage；裁切窗口随照片一起旋转（需求⑥）
+    var cropRotation by remember { mutableFloatStateOf(0f) }
+    // 进入动画：待带框原图加载完成后才启动（避免异步加载导致的"闪一下"，需求①）
+    LaunchedEffect(framedReady) {
+        if (!framedReady) return@LaunchedEffect
         launch { framedAlpha.animateTo(0f, tween(durationMillis = 260)) }
         launch { delay(140); photoAlpha.animateTo(1f, tween(durationMillis = 240)) }
-        // 2)+3) 白框消失后：方图微微放大，同步浮现裁切白框、顶栏、底部菜单
         launch {
             delay(240)
             launch { enterScale.animateTo(1f, tween(durationMillis = 420, easing = FastOutSlowInEasing)) }
@@ -693,12 +737,15 @@ private fun PhotoEditorOverlay(
             launch { bottomOffset.animateTo(0f, tween(durationMillis = 380, easing = FastOutSlowInEasing)) }
         }
     }
+    // 兜底：若带框原图迟迟未加载（异常），也启动进入动画
+    LaunchedEffect(Unit) { delay(600); if (!framedReady) framedReady = true }
     LaunchedEffect(leaving) {
         if (leaving) {
+            launch { contentAlpha.animateTo(0f, tween(durationMillis = 220)) }
             launch { topAlpha.animateTo(0f, tween(durationMillis = 200)) }
             launch { bottomAlpha.animateTo(0f, tween(durationMillis = 200)) }
             launch { bottomOffset.animateTo(48f, tween(durationMillis = 200)) }
-            // 等淡出后再执行真正的退出/保存
+            delay(220)
             pendingAction?.invoke()
             leaving = false
             pendingAction = null
@@ -713,7 +760,7 @@ private fun PhotoEditorOverlay(
     // 编辑中拦截系统返回：已修改则弹确认框，否则淡出退出
     BackHandler(enabled = !leaving) { handleBack() }
 
-    Box(Modifier.fillMaxSize().background(if (isDark) darkBase else bgColor)) {
+    Box(Modifier.fillMaxSize().background(if (isDark) darkBase else bgColor).graphicsLayer { alpha = contentAlpha.value }) {
         // 与照片详情页背景保持一致：深色模式先叠取色淡显 + 半透明灰遮罩
         if (isDark) {
             Box(Modifier.fillMaxSize().background(bgColor.copy(alpha = 0.4f)))
@@ -727,6 +774,7 @@ private fun PhotoEditorOverlay(
             modifier = Modifier.fillMaxSize()
                 .padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 36.dp)
                 .graphicsLayer { alpha = framedAlpha.value },
+            onSuccess = { framedReady = true },
         )
 
         Column(Modifier.fillMaxSize()) {
@@ -765,68 +813,41 @@ private fun PhotoEditorOverlay(
                 Modifier.weight(1f).fillMaxWidth().padding(horizontal = 32.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                // CROP 页：自定义裁切（经典 uCrop 模型）—— 照片做旋转/平移/缩放，取景框(1:1 白框)固定不动。
-                // 单指拖动 / 双指捏合 = 移动并缩放【照片】；旋转滑块 = 旋转照片；取景框位置始终不变。
-                // 默认 zoom=1 → 取景框=整张照片（占满）；双指放大照片即取景框圈出子区域。
-                val cropAreaState = rememberUpdatedState(state)
-                val cropChangeState = rememberUpdatedState(onStateChange)
-                val stageSize = remember { mutableStateOf(IntSize.Zero) }
-                Box(
-                    Modifier.fillMaxSize()
-                        .onSizeChanged { stageSize.value = it }
-                        .graphicsLayer { alpha = if (state.tab == EditorTab.CROP) photoAlpha.value else 0f }
-                        .pointerInput(state.tab == EditorTab.CROP) {
-                            if (state.tab == EditorTab.CROP) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    val sz = stageSize.value
-                                    val frameSide = minOf(sz.width, sz.height).toFloat()
-                                    if (frameSide <= 0f) return@detectTransformGestures
-                                    val s = cropAreaState.value
-                                    val newZoom = (s.cropZoom * zoom).coerceIn(1f, 4f)
-                                    val maxPan = (newZoom - 1f) / 2f
-                                    val nx = (s.panX + pan.x / frameSide).coerceIn(-maxPan, maxPan)
-                                    val ny = (s.panY + pan.y / frameSide).coerceIn(-maxPan, maxPan)
-                                    cropChangeState.value(s.copy(cropZoom = newZoom, panX = nx, panY = ny))
-                                }
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // 照片（旋转/缩放/平移由 graphicsLayer 驱动）；取景框固定居中 1:1
-                    val frameSidePx = minOf(stageSize.value.width, stageSize.value.height).toFloat()
-                    Image(
-                        bitmap = bitmap.asImageBitmap(), contentDescription = "裁切预览", contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().graphicsLayer {
-                            rotationZ = state.rotation
-                            scaleX = state.cropZoom; scaleY = state.cropZoom
-                            translationX = state.panX * frameSidePx
-                            translationY = state.panY * frameSidePx
-                        },
-                    )
-                    // 固定取景框 + 灰底遮罩（仅 CROP 页显示，进入时随放大同步淡入）
-                    CropFrameOverlay(
-                        Modifier.fillMaxSize().graphicsLayer { alpha = cropAlpha.value },
-                    )
+                // 照片层 + 裁切指示层：CROP 页用 CanHub CropImageView（照片 + 灰遮罩 + 白框一体，手势内部接管）。
+                // 通过 cropPageAlpha 与 FILTER 页的照片交叉淡入淡出（需求⑧），切页平滑无闪。
+                // 分层（由下到上，需求④）：根背景色 → 照片层 → 裁切指示层(CanHub 灰遮罩+白框) → 交互层(顶/底栏)。
+                AndroidView(
+                    factory = { ctx ->
+                        CropImageView(ctx).apply {
+                            setImageCropOptions(buildCropOptions(ctx))
+                            cropViewState.value = this
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                        .graphicsLayer { alpha = cropPageAlpha * cropAlpha.value },
+                )
+                // 进入编辑/切换照片时把无边框正方形喂给 CropImageView（仅 bitmap 变化时设置一次）
+                LaunchedEffect(bitmap) {
+                    cropViewState.value?.setImageBitmap(bitmap)
                 }
-                // 非 CROP 页：无边框正方形（白框消失后淡入 + 微微放大 + 滤镜预览）；裁切仅发生在 CROP 页
-                if (state.tab != EditorTab.CROP) {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(), contentDescription = "编辑预览", contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().graphicsLayer {
-                            alpha = photoAlpha.value
-                            scaleX = enterScale.value; scaleY = enterScale.value
-                            colorFilter = ColorFilter.colorMatrix(composeCm)
-                        },
-                    )
-                }
-                // 暗角预览（近似，保存时才烘焙）；CROP 页显示取景框，不再叠暗角
+                // 非 CROP 页照片层：无边框方图（白框消失后淡入 + 微微放大 + 滤镜预览）
+                Image(
+                    bitmap = bitmap.asImageBitmap(), contentDescription = "编辑预览", contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().graphicsLayer {
+                        alpha = photoPageAlpha * photoAlpha.value
+                        scaleX = enterScale.value; scaleY = enterScale.value
+                        colorFilter = ColorFilter.colorMatrix(composeCm)
+                    },
+                )
+                // 暗角预览（仅非 CROP 页；CROP 页由 CropImageView 自带取景框，不再叠暗角）
                 if (state.vig && state.tab != EditorTab.CROP) {
                     Box(
-                        Modifier.fillMaxSize().background(
-                            Brush.radialGradient(
-                                colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = (state.vigInt * 0.69f).coerceIn(0f, 1f))),
+                        Modifier.fillMaxSize().graphicsLayer { alpha = photoPageAlpha }
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = (state.vigInt * 0.69f).coerceIn(0f, 1f))),
+                                ),
                             ),
-                        ),
                     )
                 }
             }
@@ -845,14 +866,33 @@ private fun PhotoEditorOverlay(
                             Column {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Slider(
-                                        value = state.rotation,
-                                        onValueChange = { onStateChange(state.copy(rotation = it)) },
+                                        value = cropRotation,
+                                        onValueChange = { new ->
+                                            val delta = new - cropRotation
+                                            cropRotation = new
+                                            // 旋转照片：裁切窗口随照片一起旋转（保持相对原图的位置不变），
+                                            // 旋转后裁切区域始终外切于原图、不会越界（需求⑥）。不再把裁切框收敛为内切正方形。
+                                            cropViewState.value?.rotateImage(delta.roundToInt())
+                                        },
                                         valueRange = -45f..45f,
                                         modifier = Modifier.weight(1f),
                                         colors = sliderColors,
                                         onValueChangeFinished = { onCommit() },
                                     )
-                                    Text("${state.rotation.toInt()}°", color = fg, fontSize = 13.sp, modifier = Modifier.padding(start = 10.dp).width(46.dp))
+                                    Text("${cropRotation.toInt()}°", color = fg, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp).width(40.dp))
+                                    // 右侧复位按钮：跳转到"不旋转 + 裁切范围=原图(满框)"状态（需求⑤）
+                                    Box(
+                                        Modifier.size(34.dp).clip(CircleShape).background(capsuleBg)
+                                            .clickable {
+                                                cropViewState.value?.let { v ->
+                                                    if (cropRotation != 0f) v.rotateImage(-cropRotation.roundToInt())
+                                                    v.cropRect = inscribedSquare(bitmap, 0f)
+                                                }
+                                                cropRotation = 0f
+                                                onCommit()
+                                            },
+                                        contentAlignment = Alignment.Center,
+                                    ) { Icon(Icons.Filled.Refresh, contentDescription = "复位", tint = fg) }
                                 }
                             }
                         }
@@ -872,16 +912,18 @@ private fun PhotoEditorOverlay(
                                 onCommit = onCommit,
                                 isDark = isDark,
                                 fg = fg,
+                                bgColor = if (isDark) darkBase else bgColor,
                             )
                         }
                     }
                 }
-                // 下半部分：菜单栏（裁切 / 调节 / 滤镜），左对齐；背景色落在"选中按钮"上（非整条栏），故栏本身透明无底色
+                // 下半部分：菜单栏（裁切 / 滤镜），左对齐；背景色落在"选中按钮"上（非整条栏），故栏本身透明无底色
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically,
                 ) {
                     EditorTab.values().forEach { t ->
+                        if (t == EditorTab.ADJUST) return@forEach   // 不显示"调节"入口
                         val label = when (t) { EditorTab.CROP -> "裁切"; EditorTab.ADJUST -> "调节"; EditorTab.FILTER -> "滤镜" }
                         val selected = state.tab == t
                         Box(
@@ -897,14 +939,22 @@ private fun PhotoEditorOverlay(
         }
     }
 
-    // 返回确认丢弃修改
+    // 返回确认丢弃修改（可一并还原为裁切前的原图，需求②）
     if (showDiscard) {
+        val canRestore = origBackupOf(frameFile).exists()
         AlertDialog(
             onDismissRequest = { showDiscard = false },
             title = { Text("放弃修改") },
-            text = { Text("当前编辑尚未保存，确定放弃这些修改吗？") },
+            text = { Text(if (canRestore) "当前编辑尚未保存。可放弃修改，或一并还原为裁切前的原图。" else "当前编辑尚未保存，确定放弃这些修改吗？") },
             confirmButton = { TextButton(onClick = { showDiscard = false; requestExit(onCancel) }) { Text("放弃") } },
-            dismissButton = { TextButton(onClick = { showDiscard = false }) { Text("继续编辑") } },
+            dismissButton = {
+                Row {
+                    if (canRestore) {
+                        TextButton(onClick = { showDiscard = false; requestExit(onRestoreOriginal) }) { Text("还原原图") }
+                    }
+                    TextButton(onClick = { showDiscard = false }) { Text("继续编辑") }
+                }
+            },
         )
     }
 }
@@ -944,6 +994,7 @@ private fun EditorFilterPanel(
     onCommit: () -> Unit,
     isDark: Boolean,
     fg: Color,
+    bgColor: Color,
 ) {
     val arrowColor = if (isDark) Color(0xFFCFCFCF) else Color(0xFF6B5744)
     val squareSize = 150.dp
@@ -961,68 +1012,99 @@ private fun EditorFilterPanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            // 左箭头（间距加大）
+            // 左箭头（点击区已加大，见 TintArrow）
             TintArrow(isLeft = true, color = arrowColor, onClick = {
                 scope.launch { pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0)) }
             })
             Spacer(Modifier.width(20.dp))
-            // 横滑轮播：contentPadding 让相邻页左右各露出一截，形成"当前左移、右侧新项进入"
-            HorizontalPager(
-                state = pagerState,
-                contentPadding = PaddingValues(horizontal = 44.dp),
-                pageSpacing = 0.dp,
-                modifier = Modifier.width(squareSize + 88.dp),
-            ) { page ->
-                val p = FILTER_PRESETS[page]
-                val pageOffset = (page - pagerState.currentPage - pagerState.currentPageOffsetFraction)
-                val dist = minOf(kotlin.math.abs(pageOffset), 1f)
-                val scale = (1f - dist * 0.28f).coerceAtLeast(0.5f)
-                val pageAlpha = (1f - dist * 0.6f).coerceAtLeast(0.2f)
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; alpha = pageAlpha },
-                ) {
-                    ColorSquare(
-                        dotX = 0.5f, dotY = 0.5f,
-                        onDotChange = { _, _ -> },
-                        onDotChangeFinished = {},
-                        warm = p.warm, cool = p.cool,
-                        enabled = false,
-                        isDark = isDark,
-                        modifier = Modifier.size(squareSize),
-                    )
-                    if (p.hasSlider) {
-                        Spacer(Modifier.height(8.dp))
-                        val value = when (p.id) {
-                            FilterId.WARM, FilterId.COOL -> state.tintStrength
-                            FilterId.BW -> state.bwInt
-                            else -> 0.5f
+            // 横滑轮播：contentPadding 让相邻页左右各露出一截；左右两侧叠加"背景色→透明"渐变遮罩（需求⑨）
+            Box(Modifier.width(squareSize + 88.dp)) {
+                HorizontalPager(
+                    state = pagerState,
+                    contentPadding = PaddingValues(horizontal = 44.dp),
+                    pageSpacing = 0.dp,
+                    modifier = Modifier.width(squareSize + 88.dp),
+                ) { page ->
+                    val p = FILTER_PRESETS[page]
+                    val pageOffset = (page - pagerState.currentPage - pagerState.currentPageOffsetFraction)
+                    val dist = minOf(kotlin.math.abs(pageOffset), 1f)
+                    val scale = (1f - dist * 0.28f).coerceAtLeast(0.5f)
+                    val pageAlpha = (1f - dist * 0.6f).coerceAtLeast(0.2f)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; alpha = pageAlpha },
+                    ) {
+                        // 原图：不显示调色盘，居中画一个禁止 logo（与调色盘同高）；其余滤镜：启用可调色盘（需求⑨）
+                        if (p.id == FilterId.ORIGIN) {
+                            NoFilterIcon(Modifier.size(squareSize), color = fg)
+                        } else {
+                            // 调色盘取值：暖/冷 = 饱和度(X) + 亮度(Y)；黑白 = 亮度(Y)，左右(X)无效
+                            val dotX = when (p.id) {
+                                FilterId.WARM, FilterId.COOL -> state.tintSat
+                                else -> 0.5f
+                            }
+                            val dotY = when (p.id) {
+                                FilterId.WARM, FilterId.COOL -> state.tintBri
+                                FilterId.BW -> state.bwInt
+                                else -> 0.5f
+                            }
+                            ColorSquare(
+                                dotX = dotX, dotY = dotY,
+                                onDotChange = { x, y ->
+                                    onStateChange(
+                                        when (p.id) {
+                                            FilterId.WARM, FilterId.COOL -> state.copy(tintSat = x, tintBri = y)
+                                            FilterId.BW -> state.copy(bwInt = y)   // 左右无效，仅上下调节明暗
+                                            else -> state
+                                        },
+                                    )
+                                },
+                                onDotChangeFinished = { onCommit() },
+                                warm = p.warm, cool = p.cool,
+                                enabled = true,
+                                isDark = isDark,
+                                modifier = Modifier.size(squareSize),
+                            )
                         }
-                        Slider(
-                            value = value,
-                            onValueChange = {
-                                onStateChange(
-                                    when (p.id) {
-                                        FilterId.WARM, FilterId.COOL -> state.copy(tintStrength = it)
-                                        FilterId.BW -> state.copy(bwInt = it)
-                                        else -> state
-                                    },
-                                )
-                            },
-                            valueRange = 0f..1f,
-                            modifier = Modifier.width(squareSize),
-                            colors = SliderDefaults.colors(
-                                thumbColor = if (isDark) Color.White else RetroRust,
-                                activeTrackColor = if (isDark) Color(0xFFCFCFCF) else RetroRust,
-                                inactiveTrackColor = if (isDark) Color(0xFF3A3A3A) else Color(0xFF5A5147),
-                            ),
-                            onValueChangeFinished = { onCommit() },
-                        )
+                        if (p.hasSlider) {
+                            Spacer(Modifier.height(8.dp))
+                            val value = when (p.id) {
+                                FilterId.WARM, FilterId.COOL -> state.tintStrength
+                                FilterId.BW -> state.bwInt
+                                else -> 0.5f
+                            }
+                            Slider(
+                                value = value,
+                                onValueChange = {
+                                    onStateChange(
+                                        when (p.id) {
+                                            FilterId.WARM, FilterId.COOL -> state.copy(tintStrength = it)
+                                            FilterId.BW -> state.copy(bwInt = it)
+                                            else -> state
+                                        },
+                                    )
+                                },
+                                valueRange = 0f..1f,
+                                modifier = Modifier.width(squareSize),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = if (isDark) Color.White else RetroRust,
+                                    activeTrackColor = if (isDark) Color(0xFFCFCFCF) else RetroRust,
+                                    inactiveTrackColor = if (isDark) Color(0xFF3A3A3A) else Color(0xFF5A5147),
+                                ),
+                                onValueChangeFinished = { onCommit() },
+                            )
+                        }
                     }
                 }
+                // 左遮罩：背景色 → 透明
+                Box(Modifier.align(Alignment.CenterStart).width(44.dp).height(squareSize)
+                    .background(Brush.horizontalGradient(listOf(bgColor, Color.Transparent))))
+                // 右遮罩：透明 → 背景色
+                Box(Modifier.align(Alignment.CenterEnd).width(44.dp).height(squareSize)
+                    .background(Brush.horizontalGradient(listOf(Color.Transparent, bgColor))))
             }
             Spacer(Modifier.width(20.dp))
-            // 右箭头（间距加大）
+            // 右箭头（点击区已加大，见 TintArrow）
             TintArrow(isLeft = false, color = arrowColor, onClick = {
                 scope.launch { pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost(FILTER_PRESETS.size - 1)) }
             })
@@ -1030,6 +1112,24 @@ private fun EditorFilterPanel(
         Spacer(Modifier.height(10.dp))
         // 底部滤镜名（固定，不随轮播横向动画移动）
         Text(FILTER_PRESETS[pagerState.currentPage].name, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+/** 无滤镜时的"禁止"logo：居中圆环 + 横杠，整体与调色盘同高（需求⑨）。 */
+@Composable
+private fun NoFilterIcon(modifier: Modifier, color: Color) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = size.minDimension / 2f
+            val sw = 6.dp.toPx()
+            drawCircle(color = color, style = Stroke(width = sw))
+            drawLine(
+                color = color,
+                start = Offset(center.x - r * 0.72f, center.y),
+                end = Offset(center.x + r * 0.72f, center.y),
+                strokeWidth = sw, cap = StrokeCap.Round,
+            )
+        }
     }
 }
 
@@ -1043,51 +1143,58 @@ private fun cycleTint(current: TintState, dir: Int): TintState {
 }
 
 /**
- * CROP 页自定义取景框（经典 uCrop 模型）：
- *  - 照片做旋转/平移/缩放，取景框(1:1 白框)固定居中、位置不变；
- *  - 灰底遮罩 = 取景框之外的区域（严格 1:1，落在照片显示区内、不溢出）；
- *  - 白边细、四角 L 形加粗且加长（相连不分离）。
+ * 构造 CanHub CropImageView 的 CropImageOptions：
+ *  - 1:1 固定比例、默认裁切框占满整张照片（initialCropWindowPaddingRatio=0）；
+ *  - 旋转照片时裁切指示(白框)保持为外接矩形不变（fixAspectRatio + 不锁定窗口）；
+ *  - 细白边框 + 四角加粗相连（borderCornerOffset=0），无网格线、不自动缩放。
  */
-@Composable
-private fun CropFrameOverlay(modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val w = size.width; val h = size.height
-        // 取景框 = 居中 1:1 正方形（边长 = 照片显示区短边）
-        val side = minOf(w, h)
-        val left = (w - side) / 2f; val top = (h - side) / 2f
-        val right = left + side; val bottom = top + side
-        // 灰底遮罩：框外四块矩形
-        val mask = Color.Black.copy(alpha = 0.5f)
-        drawRect(mask, topLeft = Offset(0f, 0f), size = Size(w, top))
-        drawRect(mask, topLeft = Offset(0f, bottom), size = Size(w, h - bottom))
-        drawRect(mask, topLeft = Offset(0f, top), size = Size(left, side))
-        drawRect(mask, topLeft = Offset(right, top), size = Size(w - right, side))
-        // 细白边框（无圆角）
-        drawRect(color = Color.White, topLeft = Offset(left, top), size = Size(side, side), style = Stroke(width = 2.dp.toPx()))
-        // 3x3 网格线
-        val grid = Color.White.copy(alpha = 0.4f)
-        val step = side / 3f
-        for (i in 1..2) {
-            drawLine(grid, Offset(left + step * i, top), Offset(left + step * i, bottom), strokeWidth = 1.dp.toPx())
-            drawLine(grid, Offset(left, top + step * i), Offset(right, top + step * i), strokeWidth = 1.dp.toPx())
-        }
-        // 四角 L 形加粗标记（相连、不分离），加长加粗
-        val cLen = side * 0.2f
-        val cW = 10.dp.toPx()
-        val corner = Color.White
-        // 左上
-        drawLine(corner, Offset(left, top + cLen), Offset(left, top), strokeWidth = cW)
-        drawLine(corner, Offset(left, top), Offset(left + cLen, top), strokeWidth = cW)
-        // 右上
-        drawLine(corner, Offset(right, top + cLen), Offset(right, top), strokeWidth = cW)
-        drawLine(corner, Offset(right, top), Offset(right - cLen, top), strokeWidth = cW)
-        // 左下
-        drawLine(corner, Offset(left, bottom - cLen), Offset(left, bottom), strokeWidth = cW)
-        drawLine(corner, Offset(left, bottom), Offset(left + cLen, bottom), strokeWidth = cW)
-        // 右下
-        drawLine(corner, Offset(right, bottom - cLen), Offset(right, bottom), strokeWidth = cW)
-        drawLine(corner, Offset(right, bottom), Offset(right - cLen, bottom), strokeWidth = cW)
-    }
+private fun buildCropOptions(context: Context): CropImageOptions {
+    val d = context.resources.displayMetrics.density
+    val cLen = 24f * d               // 四角加粗长度（px），比之前更小
+    // 最小裁切窗口基于"原 40dp 角长"计算，保持与之前一致（不随四角缩小而变小）
+    val minWin = (2 * 40f * d + 5f).toInt()
+    return CropImageOptions(
+        cropShape = CropImageView.CropShape.RECTANGLE,
+        guidelines = CropImageView.Guidelines.OFF,
+        fixAspectRatio = true,
+        aspectRatioX = 1,
+        aspectRatioY = 1,
+        initialCropWindowPaddingRatio = 0f,
+        autoZoomEnabled = false,
+        showCropOverlay = true,
+        showProgressBar = false,
+        borderLineThickness = 2f * d,
+        borderCornerThickness = 3f * d,
+        borderCornerLength = cLen,
+        borderCornerOffset = 0f,
+        borderCornerColor = AndroidColor.WHITE,
+        guidelinesColor = AndroidColor.WHITE,
+        minCropWindowWidth = minWin,
+        minCropWindowHeight = minWin,
+    )
+}
+
+/**
+ * 计算"照片旋转 totalDegrees 后，其真实内容内最大且居中的内切正方形"对应的裁切矩形（Bitmap 像素坐标）。
+ *
+ * 任意角度旋转后的照片在 CropImageView 中会被展开成带透明边角的包围盒；若直接 fill 包围盒，
+ * 白色裁切指示框会落到照片之外的透明区。故按几何把裁切框收敛到真实照片内容内的最大内切正方形：
+ *   L = min(W, H) / (|cosθ| + |sinθ|)
+ * 其中 θ 为累计旋转角，W/H 为原始照片像素尺寸。正方形工作图在 0° 时为满框，45° 时收缩为 W/√2，
+ * 始终落在照片内部。返回的 Rect 已居中于旋转后的包围盒。
+ */
+private fun inscribedSquare(bmp: Bitmap, totalDegrees: Float): Rect {
+    val rad = Math.toRadians(totalDegrees.toDouble())
+    val c = abs(cos(rad)); val s = abs(sin(rad))
+    val w = bmp.width.toDouble(); val h = bmp.height.toDouble()
+    val denom = c + s
+    val l = (min(w, h) / denom).roundToLong()           // 内切正方形边长
+    val bw = (w * c + h * s).roundToLong()              // 旋转后包围盒宽
+    val bh = (w * s + h * c).roundToLong()              // 旋转后包围盒高
+    val left = ((bw - l) / 2.0).roundToInt()
+    val top = ((bh - l) / 2.0).roundToInt()
+    val side = l.toInt()
+    return Rect(left, top, left + side, top + side)
 }
 
 /** 调节页的单行滑块：标签 + 滑条；松手时回调查 checkpoint（避免拖动过程产生大量历史点）。 */
@@ -1141,8 +1248,9 @@ private fun ThumbItem(file: File, selected: Boolean, isDark: Boolean, version: I
                 .padding(horizontal = 4.dp)
                 .height(56.dp)
                 .aspectRatio(ratio)
+                .clip(RoundedCornerShape(4.dp))
                 .background(if (isDark) RetroDarkSurface else Color(0x33000000))
-                .border(if (selected) 2.dp else 0.dp, if (selected) borderColor else Color.Transparent, RoundedCornerShape(0.dp))
+                .border(if (selected) 2.dp else 0.dp, if (selected) borderColor else Color.Transparent, RoundedCornerShape(4.dp))
                 .clickable(onClick = onClick),
         ) {
             if (imagePainter != null) {

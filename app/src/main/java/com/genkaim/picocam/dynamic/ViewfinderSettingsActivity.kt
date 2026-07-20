@@ -182,7 +182,7 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .fillMaxHeight(0.5f)
-                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .clip(RoundedCornerShape(topStart = 40.dp, topEnd = 40.dp))
                 .background(if (isDark) RetroDarkSurface else RetroCream),
         ) {
             // 固定头部：返回（左）+ 标题 + 右侧「完成」药丸按钮
@@ -193,8 +193,8 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                     .padding(
                         start = if (onboarding) 24.dp else 8.dp,
                         end = 24.dp,
-                        top = 12.dp,
-                        bottom = 12.dp,
+                        top = 20.dp,
+                        bottom = 20.dp,
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -242,12 +242,6 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                     .padding(start = 24.dp, end = 24.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text(
-                    "上方是取景框示意，可直接上下拖动定位，或用下面的滑块调整位置、宽度与圆角。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = onSurface(isDark),
-                )
-
                 // 还原默认（二次确认）
                 Box(
                     modifier = Modifier

@@ -177,7 +177,7 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                         onDrag = { change, drag ->
                             change.consume()
                             posX = ((posX * screenWpx + drag.x) / screenWpx).coerceIn(0f, 1f)
-                            posY = ((posY * screenHpx + drag.y) / screenHpx).coerceIn(0f, 1f)
+                            posY = ((posY * screenHpx + drag.y) / screenHpx).coerceIn(0f, 0.3f)
                         },
                         onDragEnd = { commit() },
                     )
@@ -190,7 +190,7 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .fillMaxHeight(0.6f)
-                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .clip(RoundedCornerShape(topStart = 40.dp, topEnd = 40.dp))
                 .background(if (isDark) RetroDarkSurface else RetroCream),
         ) {
             // 固定头部：返回（左）+ 标题 + 右侧箭头
@@ -201,8 +201,8 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                     .padding(
                         start = if (onboarding) 24.dp else 8.dp,
                         end = 24.dp,
-                        top = 12.dp,
-                        bottom = 12.dp,
+                        top = 20.dp,
+                        bottom = 20.dp,
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -250,12 +250,6 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                     .padding(start = 24.dp, end = 24.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text(
-                    "拖动上方色块，或用下面的滑块，让它与你手机屏幕顶部的灵动岛 / 挖孔完全重合，记录下它的位置与尺寸即可。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = onSurface(isDark),
-                )
-
                 // 还原默认（二次确认）
                 Box(
                     modifier = Modifier
@@ -270,7 +264,7 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                 }
 
                 SettingSlider("水平位置", posX, { posX = it }, { commit() }, 0f..1f, "${(posX * 100).roundToInt()}%", isDark)
-                SettingSlider("垂直位置", posY, { posY = it }, { commit() }, 0f..1f, "${(posY * 100).roundToInt()}%", isDark)
+                SettingSlider("垂直位置", posY, { posY = it }, { commit() }, 0f..0.3f, "${(posY * 100).roundToInt()}%", isDark)
                 SettingSlider("宽度", width, { width = it }, { commit() }, 40f..400f, "${width.roundToInt()} dp", isDark)
                 SettingSlider("高度", height, { height = it }, { commit() }, 16f..160f, "${height.roundToInt()} dp", isDark)
                 SettingSlider("圆角", corner, { corner = it }, { commit() }, 0f..80f, "${corner.roundToInt()} dp", isDark)
