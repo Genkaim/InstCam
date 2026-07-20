@@ -87,6 +87,9 @@ dependencies {
     // Coil 图片加载
     implementation(libs.coil.compose)
 
+    // CanHub 开源裁切/旋转（CropImageView，内嵌于 Compose）
+    implementation("com.vanniktech:android-image-cropper:4.7.0")
+
     // EXIF 方向纠正 & Palette 莫奈取色
     implementation(libs.androidx.exifinterface)
     implementation(libs.androidx.palette)
