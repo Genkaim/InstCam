@@ -1,12 +1,9 @@
 package com.genkaim.picocam.ui.components
 
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
-import android.os.Build
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -40,7 +37,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -76,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.genkaim.picocam.camera.PhotoStorage
-import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.genkaim.picocam.dynamic.DynamicIslandConfig
@@ -149,6 +145,7 @@ fun CaptureTransitionOverlay(
     onDetailState: (Boolean) -> Unit,
     onExit: suspend (Boolean) -> Unit,
     onAddToAlbum: suspend () -> Unit,
+    onEdit: () -> Unit,
     onViewfinderAutoOpen: () -> Unit = {},
 ) {
     val configuration = LocalConfiguration.current
@@ -529,23 +526,18 @@ fun CaptureTransitionOverlay(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 保存（左胶囊：仅左圆角大）
+                // 编辑（左胶囊：仅左圆角大）——调起自写编辑器
                 Row(
                     Modifier
                         .height(56.dp).width(128.dp)
                         .clip(RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp, topEnd = 6.dp, bottomEnd = 6.dp))
                         .background(capsuleBg)
-                        .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                            scope.launch {
-                                saveToGallery(context, file)
-                                Toast.makeText(context, "已保存到系统相册", Toast.LENGTH_SHORT).show()
-                            }
-                        },
+                        .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { onEdit() },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
-                    Text("保存", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
+                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
+                    Text("编辑", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
                 }
 
                 Spacer(Modifier.width(2.dp))
@@ -572,33 +564,12 @@ fun CaptureTransitionOverlay(
                         .size(56.dp)
                         .clip(CircleShape)
                     .background(btnDelBg)
-                    .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { if (showButtons && file.delete()) { deleted = true; close() } },
+                    .clickable(enabled = showButtons, interactionSource = remember { MutableInteractionSource() }, indication = null) { if (showButtons && PhotoStorage.deletePhotoWithSidecars(context, file)) { deleted = true; close() } },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.Delete, contentDescription = "删除", tint = btnDelIcon)
                 }
             }
-    }
-}
-
-private suspend fun saveToGallery(context: Context, file: File) {
-    withContext(Dispatchers.IO) {
-        try {
-            val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Images.Media.IS_PENDING, 1)
-            }
-            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return@withContext
-            context.contentResolver.openOutputStream(uri)?.use { out ->
-                file.inputStream().use { inp -> inp.copyTo(out) }
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                values.clear()
-                values.put(MediaStore.Images.Media.IS_PENDING, 0)
-                context.contentResolver.update(uri, values, null, null)
-            }
-        } catch (_: Exception) {}
     }
 }
 
@@ -622,30 +593,3 @@ private suspend fun shareImage(context: Context, file: File) {
     }
 }
 
-/**
- * 从照片解码小图并用 Palette 取主色（逻辑同 PhotoViewerActivity.extractDominantColor）。
- * 先 inJustDecodeBounds 读尺寸、按目标(~256px)算 inSampleSize，再解码小图 → Palette，控制耗时；
- * 以官方「Muted（低饱和）」色板为主，背景为柔和淡彩，失败回退 fallback。
- */
-private suspend fun extractDominantColor(file: File, fallback: Int): Int = withContext(Dispatchers.IO) {
-    try {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.path, bounds)
-        val target = 256
-        var sample = 1
-        var w = bounds.outWidth; var h = bounds.outHeight
-        while (maxOf(w, h) / sample > target * 2) { sample *= 2 }   // 留 2x 余量给 Palette 边缘色
-        val opts = BitmapFactory.Options().apply { inSampleSize = sample; inJustDecodeBounds = false }
-        val bm = BitmapFactory.decodeFile(file.path, opts) ?: return@withContext fallback
-        val palette = Palette.from(bm).generate()
-        bm.recycle()
-        // 取色策略（官方 Palette 指导）：以低饱和的 Muted 色板为主，getLightMutedColor 优先取柔和亮色主调，
-        // 退到 Muted → LightVibrant → Dominant。原 getLightVibrantColor 饱和度过高（背景刺眼），
-        // 改 Muted 系列后背景为低饱和柔色，更符合"莫奈"淡彩且不与照片抢色。
-        palette.getLightMutedColor(
-            palette.getMutedColor(
-                palette.getLightVibrantColor(palette.getDominantColor(fallback))
-            )
-        )
-    } catch (_: Exception) { fallback }
-}

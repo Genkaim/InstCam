@@ -60,6 +60,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -99,6 +100,9 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -107,6 +111,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import com.genkaim.picocam.CameraViewModel
 import com.genkaim.picocam.camera.PhotoStorage
+import android.content.Context
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -129,6 +134,8 @@ import com.genkaim.picocam.dynamic.DynamicIslandSettingsActivity
 import com.genkaim.picocam.dynamic.ThemeMode
 import com.genkaim.picocam.dynamic.ViewfinderConfig
 import com.genkaim.picocam.dynamic.isDarkMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.genkaim.picocam.dynamic.ThemePrefs.saveThemeSettings
 import com.genkaim.picocam.ui.theme.RetroBrown
 import com.genkaim.picocam.ui.theme.RetroCream
@@ -136,6 +143,10 @@ import com.genkaim.picocam.ui.theme.RetroRust
 import com.genkaim.picocam.ui.theme.onSurface
 import com.genkaim.picocam.ui.theme.onSurfaceSoft
 import com.genkaim.picocam.ui.theme.surfaceCard
+
+/** 暂时开关（仅作用于相册网格点击）：true=点击照片用【系统图片编辑器】(ACTION_EDIT) 替代内置详情页；
+ *  改回 false 即恢复内置详情页（详情页内的"编辑"按钮是否调系统编辑器由 PhotoViewerActivity 自行控制）。 */
+private const val USE_SYSTEM_EDITOR = false
 
 /** 白色快门闪屏动画时长（ms）。闪屏播放完后再开始取景框→灵动岛 morph，二者共用此常量保证时序一致。 */
 private const val SHUTTER_FLASH_MS = 150
@@ -154,9 +165,48 @@ fun CameraScreen(vm: CameraViewModel = viewModel()) {
     val locLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         hasLocPerm = perms.values.any { it }
     }
+    // 相册/存储读取权限：系统编辑器写回、读回编辑结果、以及把照片镜像进系统相册都需要它。
+    // 只接受「允许全部」(full access)：Android 14+ 选「部分访问（选择照片）」时系统授予的是
+    // READ_MEDIA_VISUAL_USER_SELECTED 而【不会】授予 READ_MEDIA_IMAGES，因此以 READ_MEDIA_IMAGES 是否授予为准。
+    val photosRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+    } else {
+        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+    // 判定「已授权」所依据的权限：API 33+ 看 READ_MEDIA_IMAGES，更低版本看 READ_EXTERNAL_STORAGE。
+    // 部分访问模式下 READ_MEDIA_IMAGES 仍为未授予，故天然被排除。
+    val photosFullPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+    fun isFullPhotosAccess(ctx: android.content.Context): Boolean =
+        ContextCompat.checkSelfPermission(ctx, photosFullPermission) == PackageManager.PERMISSION_GRANTED
+    var hasPhotosPerm by remember { mutableStateOf(isFullPhotosAccess(context)) }
+    val photosLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        // 回调里不信任传入结果（部分访问下 READ_MEDIA_IMAGES 仍为未授予），统一以 checkSelfPermission 重新判定。
+        hasPhotosPerm = isFullPhotosAccess(context)
+    }
+    var lastEdited by remember { mutableStateOf<File?>(null) }
     val viewerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val edited = lastEdited
         vm.refreshPhotos()
+        vm.notifyPhotosChanged()   // 编辑保存后路径不变但内容已改，强制被编辑照片缩略图重载
         vm.restoreZoom()
+        // 系统编辑器直接改主图(in place)，但缩略图是缓存的、不会随主图自动更新；这里删旧缩略图后重生成，
+        // 确保相册显示编辑结果。无可用编辑器走内置编辑器时也无害（缩略图本就由内置保存流程重生成）。
+        if (edited != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching {
+                    val t = PhotoStorage.thumbnailFileFor(edited)
+                    if (t.exists()) t.delete()
+                    PhotoStorage.generateThumbnail(edited)
+                }
+                withContext(Dispatchers.Main) { vm.notifyPhotosChanged() }
+            }
+        }
     }
 
     val captureWithLocation: () -> Unit = {
@@ -183,20 +233,39 @@ fun CameraScreen(vm: CameraViewModel = viewModel()) {
         val loaded by AppPrefs.loaded.collectAsStateWithLifecycle()
         if (loaded) {
             if (hasCamPerm && hasLocPerm && theme.onboarded) {
-                CameraContent(vm, onSelect = { file, fadeIn ->
-                    viewerLauncher.launch(
+                CameraContent(vm,                 onSelect = { file, fadeIn ->
+                    lastEdited = file
+                    val intent = if (USE_SYSTEM_EDITOR) {
+                        // 调用系统图片编辑器：通过 FileProvider 把照片 URI 化并授予读写权限，编辑器原地改图；
+                        // 若构建失败或无可用编辑器则回退到内置编辑器。
+                        val sys = runCatching {
+                            val authority = "${context.packageName}.fileprovider"
+                            val uri = androidx.core.content.FileProvider.getUriForFile(context, authority, file)
+                            Intent(Intent.ACTION_EDIT).apply {
+                                setDataAndType(uri, "image/*")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                            }
+                        }.getOrNull()
+                        if (sys != null && sys.resolveActivity(context.packageManager) != null) sys
+                        else Intent(context, PhotoViewerActivity::class.java)
+                            .putExtra("file_path", file.path)
+                            .putExtra("fade_in", fadeIn)
+                    } else {
                         Intent(context, PhotoViewerActivity::class.java)
                             .putExtra("file_path", file.path)
-                            .putExtra("fade_in", fadeIn),
-                    )
+                            .putExtra("fade_in", fadeIn)
+                    }
+                    viewerLauncher.launch(intent)
                 }, onShutter = captureWithLocation)
             } else {
                 PermissionRequest(
                     hasCamera = hasCamPerm,
                     hasLocation = hasLocPerm,
+                    hasPhotos = hasPhotosPerm,
                     isDark = isDark,
                     onRequestCamera = { camLauncher.launch(Manifest.permission.CAMERA) },
                     onRequestLocation = { locLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) },
+                    onRequestPhotos = { photosLauncher.launch(photosRequest) },
                     onNext = {
                         // 引导流程：仅在此处手动触发灵动岛/取景框设置，并立即持久化「已引导」，
                         // 相机页本身不再自动触发设置（符合「仅引导界面才触发」）。
@@ -216,6 +285,9 @@ fun CameraScreen(vm: CameraViewModel = viewModel()) {
 private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit, onShutter: () -> Unit) {
     val context = LocalContext.current
     val photos by vm.photos.collectAsStateWithLifecycle()
+    // 编辑返回强制刷新信号：被编辑照片路径不变但内容已改，此 tick 变化驱动相册网格重组，
+    // 使该照片缩略图按 file.lastModified() 重新加载（修复"编辑保存后主界面仍是旧图"）。
+    val photosTick by vm.photosTick.collectAsStateWithLifecycle()
     val hasTakenPhoto by vm.hasTakenPhoto.collectAsStateWithLifecycle()
     val flashMode by vm.flashMode.collectAsStateWithLifecycle()
     val isBackCamera by vm.isBackCamera.collectAsStateWithLifecycle()
@@ -247,6 +319,9 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     // 拍照过渡动画状态：transitionFile 非空时显示 CaptureTransitionOverlay；animating 用于防止动画期间重复触发
     var transitionFile by remember { mutableStateOf<File?>(null) }
     var animating by remember { mutableStateOf(false) }
+    // 拍照过渡动画点「编辑」进入编辑器时置 true：叠加层暂不卸载（编辑器盖在同样的照片预览上，避免预览突兀消失），
+    // 待从编辑器返回相机（activity ON_RESUME）再收尾卸载。
+    var pendingEditExit by remember { mutableStateOf(false) }
     // ============ 多选状态：长按照片进入多选模式 ============
     var selectionMode by remember { mutableStateOf(false) }
     val selectedPhotos = remember { mutableStateListOf<File>() }
@@ -621,6 +696,9 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize().nestedScroll(nested)) {
                         items(photos, key = { it.path }) { file ->
+                            // 引用 photosTick：编辑返回时它变化 → 本 lambda 重组 → GridPhotoCard 重读 file.lastModified()，
+                            // 被编辑照片缩略图按新 lastModified 重新加载（路径不变故 listPhotos 不触发重组，需此显式信号）。
+                            val _tick = photosTick
                             if (placeholderPhoto == file) {
                                 // 完全透明占位：只占空间（避免相册从空状态突变到有格子）+ 测量飞入落点
                                 // 不显示任何视觉元素。placeRatio key 含 photoVersion → addPolaroidFrame 完成后
@@ -653,6 +731,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     isSelected = isSelected,
                                     isNewest = file == photos.first(),
                                     justLanded = file == landedFile,
+                                    version = file.lastModified(),
                                     onClick = {
                                         if (selectionMode) {
                                             if (isSelected) selectedPhotos.remove(file) else selectedPhotos.add(file)
@@ -851,6 +930,19 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         context.imageLoader.execute(req)
                     }
                 },
+                onEdit = {
+                    // 调起自建（内置）编辑器：打开相册详情页并直接进入编辑态（open_edit）。
+                    // 关键：不在此处卸载叠加层（否则预览照片会"啪"地消失），而是保持叠加层挂载，
+                    // 让编辑器盖在完全相同的照片预览之上实现平滑过渡；叠加层在从编辑器返回时（ON_RESUME）统一收尾。
+                    transitionFile?.let { f ->
+                        context.startActivity(
+                            Intent(context, PhotoViewerActivity::class.java)
+                                .putExtra("file_path", f.absolutePath)
+                                .putExtra("open_edit", true),
+                        )
+                        pendingEditExit = true
+                    }
+                },
                 onViewfinderAutoOpen = {
                     // 进入预览模式时（背景模糊后）自动打开取景框
                     if (anim.openViewfinderAfterCapture) {
@@ -871,6 +963,36 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                     if (deleted) vm.refreshPhotosSync()
                 },
             )
+        }
+
+        // 从「拍照过渡动画 → 编辑」进入编辑器时，叠加层先不卸载（编辑界面盖在同样的照片预览上，避免预览突兀消失）；
+        // 待从编辑器返回相机（ON_RESUME）再收尾：确保新照片已进入相册、清除占位、复位相机并展开取景框。
+        val cameraLifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(cameraLifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME && pendingEditExit) {
+                    pendingEditExit = false
+                    transitionFile?.let { f ->
+                        // 确保新照片已在相册列表（编辑可能很快返回，叠加层动画的 onAddToAlbum 尚未执行）
+                        vm.setPlaceholder(f)
+                        scope.launch { vm.refreshPhotosSync() }
+                    }
+                    vm.clearPlaceholder()
+                    animating = false
+                    transitionFile = null
+                    vm.restoreZoom()
+                    // 与正常关闭一致：展开取景框回到相机态
+                    if (anim.openViewfinderAfterCapture) {
+                        scope.launch {
+                            animate(progressState.floatValue, 1f, animationSpec = tween(durationMillis = 380)) { v, _ ->
+                                progressState.floatValue = v
+                            }
+                        }
+                    }
+                }
+            }
+            cameraLifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { cameraLifecycleOwner.lifecycle.removeObserver(observer) }
         }
 
         // 多选删除二次确认（适配深色模式）。同样放在 Column 外面，避免被 Column 内容遮挡。
@@ -904,6 +1026,7 @@ private fun GridPhotoCard(
     isSelected: Boolean,
     isNewest: Boolean = false,
     justLanded: Boolean = false,
+    version: Long = 0L,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -916,12 +1039,17 @@ private fun GridPhotoCard(
             if (opts.outWidth > 0 && opts.outHeight > 0) opts.outWidth.toFloat() / opts.outHeight.toFloat() else 1f
         } catch (_: Exception) { 1f }
     }
+    // [修复] 旧实现把 file.lastModified() 算在 composable 内部，但 GridPhotoCard 可被 Compose 跳过
+    // （file 按路径相等、其余参数皆稳定）→ 编辑返回时 lastMod 不重算 → memoryCacheKey 不变 → 旧缩略图残留。
+    // 现由调用方在 photosTick 变化时重算 file.lastModified() 并以 version 传入：version 变动使本 composable
+    // 无法被跳过 → lastMod 重算 → memoryCacheKey 跟随缩略图 lastModified → 必定加载编辑后新图。
+    val lastMod = version
     // 列表永远加载缩略图（几十 KB），不读 8MB 原图；缓存 key 用缩略图自身 lastModified，
     // 与原图解耦 → 任何全局刷新（_photoVersion 变化）都不会让 Coil 重新解码全部缩略图。
     // crossfade(300) → 拍照后 addPolaroidFrame 完成时，GridPhotoCard 从占位 cell 切换过来，
     // 图片从无到有 300ms 淡入，避免"格子突然有图"的视觉跳变。
-    val thumb = remember(file) { PhotoStorage.thumbnailFor(file) }
-    val request = remember(thumb) {
+    val thumb = remember(file, lastMod) { PhotoStorage.thumbnailFor(file) }
+    val request = remember(thumb, lastMod) {
         ImageRequest.Builder(context)
             .data(thumb)
             .size(PhotoStorage.THUMB_SIZE)
@@ -1012,7 +1140,7 @@ private fun GridPhotoCard(
 }
 
 @Composable
-private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, isDark: Boolean, onRequestCamera: () -> Unit, onRequestLocation: () -> Unit, onNext: () -> Unit) {
+private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, hasPhotos: Boolean, isDark: Boolean, onRequestCamera: () -> Unit, onRequestLocation: () -> Unit, onRequestPhotos: () -> Unit, onNext: () -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
@@ -1043,11 +1171,29 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, isDark: 
 
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(percent = 50))
-                .background(if (hasLocation) surfaceCard(isDark) else RetroBrown)
-                .clickable(enabled = !hasLocation, onClick = onRequestLocation)
-                .padding(vertical = 14.dp),
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(percent = 50))
+            .background(if (hasPhotos) surfaceCard(isDark) else RetroBrown)
+            .clickable(enabled = !hasPhotos, onClick = onRequestPhotos)
+            .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (hasPhotos) "✓ 相册已授权" else "授予相册权限",
+                style = MaterialTheme.typography.titleMedium,
+                color = if (hasPhotos) onSurface(isDark) else RetroCream,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(percent = 50))
+            .background(if (hasLocation) surfaceCard(isDark) else RetroBrown)
+            .clickable(enabled = !hasLocation, onClick = onRequestLocation)
+            .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -1064,12 +1210,13 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, isDark: 
             modifier = Modifier.padding(top = 14.dp),
         )
 
-        // 两个权限都授予后，稍等一下自动进入引导设置（不再需要手动点击"下一步"）
-        if (hasCamera && hasLocation) {
-            LaunchedEffect(Unit) {
+        // 三个权限（相机/定位/相册）都授予后，稍等一下自动进入引导设置（不再需要手动点击"下一步"）
+        if (hasCamera && hasLocation && hasPhotos) {
+            LaunchedEffect(hasCamera, hasLocation, hasPhotos) {
                 delay(400L)
                 onNext()
             }
         }
     }
 }
+

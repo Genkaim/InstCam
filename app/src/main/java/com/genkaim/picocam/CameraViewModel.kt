@@ -151,6 +151,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _photoVersion = MutableStateFlow(0L)
     val photoVersion: StateFlow<Long> = _photoVersion.asStateFlow()
 
+    /**
+     * 编辑返回强制刷新信号：编辑照片保存后，原文件内容改变但路径不变，且 listPhotos 结果内容相等，
+     * 导致 _photos 不会 emit、GridPhotoCard 的 remember(file) 也因 File.equals(路径) 永不失效，
+     * 缩略图停留在编辑前的旧图。此 tick 每次编辑返回时变化，强制相册网格重组，使被编辑照片的
+     * 缩略图按 file.lastModified() 重新加载（见 GridPhotoCard）。
+     */
+    private val _photosTick = MutableStateFlow(0L)
+    val photosTick: StateFlow<Long> = _photosTick.asStateFlow()
+    /** 编辑返回时调用：通知相册刷新被编辑照片的缩略图。 */
+    fun notifyPhotosChanged() { _photosTick.value = System.currentTimeMillis() }
+
     /** 拍照详情态期间，相册首位显示为空白占位（照片已在列表中但不渲染图片），退出详情后占位变为真实照片。 */
     private val _placeholderPhoto = MutableStateFlow<File?>(null)
     val placeholderPhoto: StateFlow<File?> = _placeholderPhoto.asStateFlow()
@@ -418,6 +429,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                                 )
                             }
                         }
+                        // 拍照即同步存一份到系统相册（MediaStore）：让用户能在系统图库看到/编辑本 App 照片，
+                        // 且系统编辑器只对"系统相册里的图"才会原地写回(覆盖原图)。
+                        runCatching {
+                            val gUri = PhotoStorage.saveToGalleryReturnUri(getApplication(), file)
+                            if (gUri != null) PhotoStorage.writeGalleryId(file, gUri)
+                        }
                         // T2: addPolaroidFrame 完成 → photoVersion 变化 → LaunchedEffect 的 while 退出 → showPhoto=true
                         //    → AsyncImage 读到带白框版本。必须早于取色，取色不计入照片出现间隔（避免不同设备时长差异）。
                         _photoVersion.value = System.currentTimeMillis()
@@ -431,8 +448,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun deletePhoto(file: File) {
-        // 同时删除缩略图与拍照原图/滤镜元信息侧车，避免残留文件占用空间
-        PhotoStorage.deletePhotoWithSidecars(file)
+        // 同时删除缩略图与拍照原图/滤镜元信息侧车，并同步删除系统相册镜像副本
+        PhotoStorage.deletePhotoWithSidecars(getApplication(), file)
         refreshPhotos()
     }
     fun toggleFlash() {

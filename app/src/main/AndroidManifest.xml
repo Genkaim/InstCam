@@ -5,6 +5,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- 系统编辑：把无边框图插入 MediaStore 拿 content URI 调 ACTION_EDIT，读回需要读媒体权限；
+         Android 9 及以下向 MediaStore 写入还需写权限（Android 10+ 由作用域存储管理，应用对自己插入的媒体自有） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+：配合 READ_MEDIA_IMAGES 一起请求，使系统弹窗提供「选择照片（部分访问）」选项；
+         本应用只接受「允许全部」，部分访问不会被判定为已授权（见 CameraScreen 逻辑）。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <!-- API 29~32 作用域存储下读取 MediaStore（系统相册）仍需此权限（本 App 自己插入的媒体在 29+ 可自管，
+         但读回编辑器写回的结果、以及在旧系统上定位照片需要）。 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <uses-feature
         android:name="android.hardware.camera.any"
