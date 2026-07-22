@@ -29,6 +29,8 @@ fun buildFilterColorMatrix(eff: EffectiveFilter): ColorMatrix {
     if (eff.warmth != 0f) cm.postConcat(warmthMatrix(eff.warmth))
     // 饱和度：shader 为 mix(luma, color, 1+uSaturation)；ColorMatrix.setSaturation(1+s) 等价
     if (eff.saturation != 0f) cm.postConcat(ColorMatrix().apply { setSaturation(1f + eff.saturation) })
+    // 对比度：out = (1+c)*color - 0.5*c（围绕中灰 0.5 扩展/压缩），中性 c=0 即恒等
+    if (eff.contrast != 0f) cm.postConcat(contrastMatrix(eff.contrast))
     // 灰度（黑白）：最后叠加，覆盖彩色；shader 为 mix(color, luma, uGrayscale)
     if (eff.grayscale > 0f) cm.postConcat(grayscaleMatrix(eff.grayscale))
     return cm
@@ -51,3 +53,11 @@ private fun warmthMatrix(w: Float) = ColorMatrix(floatArrayOf(
 
 /** 灰度：setSaturation(1-g)，g=1 时完全去色。 */
 private fun grayscaleMatrix(g: Float) = ColorMatrix().apply { setSaturation(1f - g) }
+
+/** 对比度：围绕中灰(0.5)扩展/压缩。c>0 更通透、c<0 更灰；c=0 恒等。 */
+private fun contrastMatrix(c: Float) = ColorMatrix(floatArrayOf(
+    (1f + c), 0f, 0f, 0f, -0.5f * c * 255f,
+    0f, (1f + c), 0f, 0f, -0.5f * c * 255f,
+    0f, 0f, (1f + c), 0f, -0.5f * c * 255f,
+    0f, 0f, 0f, 1f, 0f,
+))

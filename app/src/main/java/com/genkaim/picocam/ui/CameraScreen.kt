@@ -65,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -73,15 +74,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -243,6 +241,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
     var effectsExpanded by remember { mutableStateOf(false) }
     // 相册首位占位位置（退出预览时照片飞入此处）；由占位 cell 的 onGloballyPositioned 测量
     var albumSlot by remember { mutableStateOf<Rect?>(null) }
+    // 刚飞入落点的照片（用于触发该格子边框渐出）；onExit 时置位，使 GridPhotoCard 边框平滑淡出
+    var landedFile by remember { mutableStateOf<File?>(null) }
 
     // 拍照过渡动画状态：transitionFile 非空时显示 CaptureTransitionOverlay；animating 用于防止动画期间重复触发
     var transitionFile by remember { mutableStateOf<File?>(null) }
@@ -652,6 +652,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     selectionMode = selectionMode,
                                     isSelected = isSelected,
                                     isNewest = file == photos.first(),
+                                    justLanded = file == landedFile,
                                     onClick = {
                                         if (selectionMode) {
                                             if (isSelected) selectedPhotos.remove(file) else selectedPhotos.add(file)
@@ -863,6 +864,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 onExit = { deleted ->
                     vm.clearPlaceholder()   // 占位变真实照片
                     animating = false
+                    if (!deleted) landedFile = transitionFile   // 触发落点格子边框渐出（仅正常关闭时）
                     transitionFile = null
                     vm.restoreZoom()
                     // 仅删除时才刷新列表（需移除已删文件）；正常关闭不刷新，避免动画后缩略图闪动
@@ -901,6 +903,7 @@ private fun GridPhotoCard(
     selectionMode: Boolean,
     isSelected: Boolean,
     isNewest: Boolean = false,
+    justLanded: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -926,18 +929,46 @@ private fun GridPhotoCard(
             .crossfade(300)
             .build()
     }
-    // 圆角边框：仅【最新落入相册第一张】的照片首次出现时从 0 渐入（enterAlpha），与缩略图 crossfade 配合，
-    // 避免"打印后照片落入相册时边框瞬间出现"的视觉跳变；选中态基础透明度(selBase)即时切换，不与进入动画耦合。
-    val enterAlpha = remember { Animatable(if (isNewest) 0f else 1f) }
-    LaunchedEffect(Unit) { if (isNewest) enterAlpha.animateTo(1f, tween(durationMillis = 150, easing = LinearEasing)) }
+    // 边框渐入：用 produceState 逐帧更新 borderAlpha，再用 .alpha() + .border() 组合实现渐入。
+    // 不用 Animatable + LaunchedEffect（深色模式下可能因 LazyVerticalGrid slot 复用机制导致动画不触发），
+    // produceState 用 file 作 key，每次新文件都新建协程逐帧更新，每次 value 变化强制 recomposition。
+    val borderAlpha: Float by produceState(initialValue = 0f, key1 = file) {
+        if (isNewest) {
+            val startMs = System.currentTimeMillis()
+            val durationMs = 150L
+            while (true) {
+                val elapsed = System.currentTimeMillis() - startMs
+                value = (elapsed.toFloat() / durationMs).coerceAtMost(1f)
+                if (value >= 1f) break
+                delay(16L)
+            }
+        } else {
+            value = 1f
+        }
+    }
+    // 边框渐出（仅深色模式）：照片飞入落点后，落点格子的边框平滑淡出至透明，避免深色模式下强边框"硬切"。
+    // 与渐入共用 produceState（key=justLanded），每次落点变化强制重跑逐帧动画，深色模式下可靠触发、不依赖 Animatable。
+    val borderOutAlpha: Float by produceState(initialValue = 1f, key1 = justLanded) {
+        if (justLanded && isDark) {
+            val startMs = System.currentTimeMillis()
+            val durationMs = 350L
+            while (true) {
+                val elapsed = System.currentTimeMillis() - startMs
+                value = (1f - elapsed.toFloat() / durationMs).coerceAtMost(1f).coerceAtLeast(0f)
+                if (value <= 0f) break
+                delay(16L)
+            }
+        } else {
+            value = 1f
+        }
+    }
     val selBase = if (isSelected) 1f else if (isDark) 0.8f else 0.3f
-    val borderColor = (if (isSelected) RetroCream else onSurfaceSoft(isDark)).copy(alpha = selBase * enterAlpha.value)
+    val borderBaseColor = if (isSelected) RetroCream else onSurfaceSoft(isDark)
     val borderWidthDp = if (isSelected) 2.dp else 1.dp
-    val borderShape = RoundedCornerShape(4.dp)
     Box(
         Modifier
             .aspectRatio(fileRatio)
-            .clip(borderShape)
+            .clip(RoundedCornerShape(4.dp))
             .background(if (isSelected) RetroRust.copy(alpha = 0.35f) else surfaceCard(isDark))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
@@ -962,19 +993,20 @@ private fun GridPhotoCard(
                     .border(1.5.dp, if (isSelected) RetroCream else Color(0x88FFFFFF), CircleShape),
             )
         }
-        // 边框：作为最末尾 child，确保在所有 content 之上
-        // 关键：之前用 Modifier.border 会被 dark overlay 等 content 覆盖（即使 drawWithContent 也可能因 state 订阅时机不对不重绘），
-        // 放在 Box content 内最末尾、用 Modifier.drawWithContent 直接画在 inner Box 上，确保在所有 sibling 之上。
+        // 边框：最末尾 child，用于确保在所有 sibling 之上。
+        // 用 .alpha(borderAlpha * selBase) 控制渐入，比之前用 drawWithContent + Animatable 更可靠：
+        // produceState 每帧更新 borderAlpha → 强制 recomposition → .alpha() 重绘整个边框 Box。
+        // 之前方案不生效根因：Animatable.value 在 drawWithContent lambda 中通过闭包捕获，
+        // 深色模式下 LazyVerticalGrid slot 复用可能导致 Animatable 被保留（值为 1f），动画不触发。
         Box(
             Modifier
                 .matchParentSize()
-                .drawWithContent {
-                    drawRoundRect(
-                        color = borderColor,
-                        style = Stroke(width = borderWidthDp.toPx()),
-                        cornerRadius = CornerRadius(4.dp.toPx()),
-                    )
-                }
+                .alpha(borderAlpha * borderOutAlpha * selBase)
+                .border(
+                    width = borderWidthDp,
+                    color = borderBaseColor,
+                    shape = RoundedCornerShape(4.dp),
+                )
         )
     }
 }

@@ -474,6 +474,8 @@ fun CaptureTransitionOverlay(
                                 translationX = lerp(0f, flyTargetCx - photoLayoutCx, flyVal)
                                 translationY = lerp(-detailUpPx, flyTargetCy - photoLayoutCy, flyVal)
                                 rotationZ = lerp(3.5f, 0f, flyVal)
+                                // 照片内容（图片本身）在飞入全程保持不透明；边框渐出由相册格子(GridPhotoCard)的 border 负责，
+                                // 不影响图片（修复上版误把图片 alpha 一起淡出、导致图片变透明的问题）
                                 alpha = 1f
                             } else {
                                 scaleX = scale

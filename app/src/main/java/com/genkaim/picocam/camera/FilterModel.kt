@@ -25,9 +25,10 @@ data class EffectiveFilter(
     val warmth: Float = 0f,     // -1~1 （暖色正 / 冷色负）
     val saturation: Float = 0f, // -1~1 （饱和度，setSaturation(1+s)）
     val brightness: Float = 0f, // -1~1 （亮度，线性乘法 1+brightness）
+    val contrast: Float = 0f,   // -1~1 （对比度，围绕中灰 0.5 扩展）
 ) {
     fun isIdentity(): Boolean =
-        grayscale == 0f && vignette == 0f && exposure == 0f && warmth == 0f && saturation == 0f && brightness == 0f
+        grayscale == 0f && vignette == 0f && exposure == 0f && warmth == 0f && saturation == 0f && brightness == 0f && contrast == 0f
 }
 
 /** 滤镜的固定顺序（与 UI 列表一致）。 */

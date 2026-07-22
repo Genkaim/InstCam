@@ -12,10 +12,12 @@ import android.graphics.Paint
 import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.location.Location
+import com.genkaim.picocam.TintState
 import com.genkaim.picocam.camera.EffectiveFilter
 import com.genkaim.picocam.camera.buildFilterColorMatrix
 import androidx.exifinterface.media.ExifInterface
 import androidx.palette.graphics.Palette
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -83,6 +85,14 @@ object PhotoStorage {
             val cropY = (rotated.height - side) / 2
             val squared = Bitmap.createBitmap(rotated, cropX, cropY, side, side)
             if (squared !== rotated) rotated.recycle()
+
+            // 若应用了滤镜：额外保存"无框无滤镜原图正方形"侧车，供编辑时作为无滤镜基图
+            // （编辑默认选中拍照滤镜，基图须为未滤镜版本，避免对已有滤镜照片再次叠加滤镜）
+            if (eff != EffectiveFilter()) {
+                try {
+                    FileOutputStream(sourceSquareFileFor(file)).use { out -> squared.compress(Bitmap.CompressFormat.JPEG, 92, out) }
+                } catch (_: Exception) {}
+            }
 
             // 应用滤镜效果到裁切后的正方形图
             val filtered = applyFilterToBitmap(squared, eff)
@@ -156,6 +166,76 @@ object PhotoStorage {
     }
 
     /**
+     * 拍照「原图无框正方形」侧车文件：同目录、扩展名前加 .src（仅当拍照时应用了滤镜才存在）。
+     * 这是未叠加任何滤镜、未加拍立得白边的正方形原图，作为编辑基图——
+     * 编辑时默认选中拍照滤镜并把它叠加在该基图上，与相册中已滤镜的照片一致，避免双重叠加滤镜。
+     */
+    fun sourceSquareFileFor(file: File): File =
+        File(file.parent, "${file.nameWithoutExtension}.src.jpg")
+
+    /** 拍照「滤镜元信息」侧车文件（JSON）：记录拍照时应用的滤镜状态，供编辑默认选中。 */
+    fun filterMetaFileFor(file: File): File =
+        File(file.parent, "${file.nameWithoutExtension}.filter.json")
+
+    /** 拍照滤镜元信息快照（与 EditState 一一对应，用于编辑时重建默认滤镜状态）。 */
+    data class CapturedFilterMeta(
+        val tint: TintState,
+        val tintSat: Float, val tintBri: Float, val tintStrength: Float,
+        val vignette: Float, val exposure: Float, val warmth: Float,
+        val saturation: Float, val brightness: Float, val contrast: Float,
+    )
+
+    /** 读取「拍照原图无框正方形」侧车；不存在（拍照未用滤镜或文件已删）返回 null。 */
+    fun loadSourceSquare(file: File): Bitmap? = runCatching {
+        val f = sourceSquareFileFor(file)
+        if (!f.exists()) null else BitmapFactory.decodeFile(f.path)
+    }.getOrNull()
+
+    /** 写入拍照滤镜元信息：tint 状态 + 取色盘位置/强度 + 完整 EffectiveFilter 数值（完整重建编辑态）。 */
+    fun saveFilterMeta(file: File, eff: EffectiveFilter, tint: TintState, sat: Float, bri: Float, strength: Float) {
+        try {
+            val o = JSONObject()
+            o.put("tint", tint.name)
+            o.put("sat", sat); o.put("bri", bri); o.put("strength", strength)
+            o.put("vignette", eff.vignette); o.put("exposure", eff.exposure)
+            o.put("warmth", eff.warmth); o.put("saturation", eff.saturation)
+            o.put("brightness", eff.brightness); o.put("contrast", eff.contrast)
+            filterMetaFileFor(file).writeText(o.toString())
+        } catch (_: Exception) {}
+    }
+
+    /** 读取拍照滤镜元信息；文件不存在或解析失败返回 null。 */
+    fun loadFilterMeta(file: File): CapturedFilterMeta? = runCatching {
+        val o = JSONObject(filterMetaFileFor(file).readText())
+        CapturedFilterMeta(
+            tint = TintState.valueOf(o.getString("tint")),
+            tintSat = o.optDouble("sat", 0.5).toFloat(),
+            tintBri = o.optDouble("bri", 0.5).toFloat(),
+            tintStrength = o.optDouble("strength", 0.5).toFloat(),
+            vignette = o.optDouble("vignette", 0.0).toFloat(),
+            exposure = o.optDouble("exposure", 0.0).toFloat(),
+            warmth = o.optDouble("warmth", 0.0).toFloat(),
+            saturation = o.optDouble("saturation", 0.0).toFloat(),
+            brightness = o.optDouble("brightness", 0.0).toFloat(),
+            contrast = o.optDouble("contrast", 0.0).toFloat(),
+        )
+    }.getOrNull()
+
+    /** 清除滤镜元信息侧车 + 原图侧车（无滤镜时不再需要）。 */
+    fun clearFilterMeta(file: File) {
+        filterMetaFileFor(file).delete()
+        sourceSquareFileFor(file).delete()
+    }
+
+    /** 删除照片及其缩略图 / 原图侧车 / 滤镜元信息侧车。 */
+    fun deletePhotoWithSidecars(file: File): Boolean {
+        thumbnailFileFor(file).delete()
+        sourceSquareFileFor(file).delete()
+        filterMetaFileFor(file).delete()
+        return file.delete()
+    }
+
+    /**
      * 由原图生成缩略图（长边 [size]），写入 [thumbnailFileFor] 路径。
      * 用 inSampleSize 直接解码到目标尺寸，避免先解码全分辨率再缩放的内存浪费。
      * 失败或不支持时返回 null（调用方回退原图）。
@@ -190,6 +270,8 @@ object PhotoStorage {
         val all = getDir(context)
             .listFiles { f -> f.extension.equals("jpg", ignoreCase = true) }
             ?.filter { !it.nameWithoutExtension.endsWith("_thumb") }   // 排除缩略图，避免相册把缩略图当独立照片重复展示
+            ?.filter { !it.nameWithoutExtension.contains(".src") }      // 排除"原图无框正方形"侧车
+            ?.filter { !it.nameWithoutExtension.contains(".orig") }     // 排除编辑复原用的原图备份
             ?.sortedByDescending { it.lastModified() }
             ?: emptyList()
         return if (limit == Int.MAX_VALUE) all else all.take(limit)
@@ -228,13 +310,13 @@ object PhotoStorage {
         val paint = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
         canvas.drawBitmap(src, 0f, 0f, paint)
         if (eff.vignette > 0f) {
-            val strength = (eff.vignette * 0xB0).toInt().coerceIn(0, 255)
+            val strength = (eff.vignette * 0xD9).toInt().coerceIn(0, 255)
             val radius = kotlin.math.hypot(out.width / 2f, out.height / 2f)
             val vignettePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = RadialGradient(
                     out.width / 2f, out.height / 2f, radius,
                     intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, android.graphics.Color.argb(strength, 0, 0, 0)),
-                    floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP,
+                    floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP,
                 )
             }
             canvas.drawRect(0f, 0f, out.width.toFloat(), out.height.toFloat(), vignettePaint)

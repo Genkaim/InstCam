@@ -405,6 +405,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         // 直接做 addPolaroidFrame，_photos 由 onAddToAlbum.refreshPhotosSync 触发更新
                         withContext(Dispatchers.IO) {
                             PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff)
+                            // 记录拍照滤镜元信息（原图侧车已由 addPolaroidFrame 在应用滤镜时保存）：
+                            // 供编辑页默认选中该滤镜，使编辑预览与相册已滤镜照片一致
+                            if (eff != EffectiveFilter()) {
+                                val tk = when (tintState) { TintState.WARM -> "暖色"; TintState.COOL -> "冷色"; else -> null }
+                                val tp = tk?.let { filters[it] }
+                                PhotoStorage.saveFilterMeta(
+                                    file, eff, tintState,
+                                    tp?.saturation ?: 0.5f,
+                                    tp?.brightness ?: 0.5f,
+                                    tp?.intensity ?: 0.5f,
+                                )
+                            }
                         }
                         // T2: addPolaroidFrame 完成 → photoVersion 变化 → LaunchedEffect 的 while 退出 → showPhoto=true
                         //    → AsyncImage 读到带白框版本。必须早于取色，取色不计入照片出现间隔（避免不同设备时长差异）。
@@ -419,9 +431,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun deletePhoto(file: File) {
-        // 同时删除缩略图，避免残留的 _thumb 文件占用空间
-        PhotoStorage.thumbnailFileFor(file).delete()
-        if (file.delete()) refreshPhotos()
+        // 同时删除缩略图与拍照原图/滤镜元信息侧车，避免残留文件占用空间
+        PhotoStorage.deletePhotoWithSidecars(file)
+        refreshPhotos()
     }
     fun toggleFlash() {
         val next = when (_flashMode.value) { FlashMode.AUTO -> FlashMode.ON; FlashMode.ON -> FlashMode.OFF; FlashMode.OFF -> FlashMode.AUTO }
