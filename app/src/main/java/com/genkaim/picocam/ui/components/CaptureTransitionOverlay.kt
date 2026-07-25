@@ -37,8 +37,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -526,7 +526,7 @@ fun CaptureTransitionOverlay(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 编辑（左胶囊：仅左圆角大）——调起自写编辑器
+                // 调整（左胶囊：仅左圆角大）——调起自写编辑器（图标与相册内置编辑器入口一致）
                 Row(
                     Modifier
                         .height(56.dp).width(128.dp)
@@ -536,8 +536,8 @@ fun CaptureTransitionOverlay(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
-                    Text("编辑", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
+                    Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
+                    Text("调整", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
                 }
 
                 Spacer(Modifier.width(2.dp))

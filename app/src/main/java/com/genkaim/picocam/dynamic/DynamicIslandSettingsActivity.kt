@@ -265,7 +265,7 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
 
                 SettingSlider("水平位置", posX, { posX = it }, { commit() }, 0f..1f, "${(posX * 100).roundToInt()}%", isDark)
                 SettingSlider("垂直位置", posY, { posY = it }, { commit() }, 0f..0.3f, "${(posY * 100).roundToInt()}%", isDark)
-                SettingSlider("宽度", width, { width = it }, { commit() }, 40f..400f, "${width.roundToInt()} dp", isDark)
+                SettingSlider("宽度", width, { width = it }, { commit() }, 16f..400f, "${width.roundToInt()} dp", isDark)
                 SettingSlider("高度", height, { height = it }, { commit() }, 16f..160f, "${height.roundToInt()} dp", isDark)
                 SettingSlider("圆角", corner, { corner = it }, { commit() }, 0f..80f, "${corner.roundToInt()} dp", isDark)
             }

@@ -516,12 +516,18 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                     EditState(
                         tint = meta.tint,
                         tintSat = meta.tintSat,
-                        tintBri = 0.5f,   // 色盘亮度(Y)已并入相机 exposure，归零避免与 exp 双计（见 toEffectiveFilter）
+                        // 恢复色盘亮度(Y)到滤镜栏的取色盘位置，不再并入亮度栏（否则滤镜栏上下数据丢失）
+                        tintBri = meta.tintBri,
                         tintStrength = meta.tintStrength,
                         vig = meta.vignette > 0.001f,
                         vigInt = meta.vignette.coerceIn(0f, 1f),
                         grayscale = meta.grayscale.coerceIn(0f, 1f),
-                        exp = (meta.exposure / 2f + 0.5f).coerceIn(0f, 1f),   // 承载相机合并后的完整曝光（含亮度滤镜+色盘Y）
+                        // 曝光只承载相机「亮度」滤镜：meta.exposure = 亮度滤镜 + 色盘Y(明暗)，需把色盘Y扣除
+                        // （色盘Y = (0.5 - tintBri)，仅调色盘激活时有效，与相机 bright 系数一致）
+                        exp = run {
+                            val paletteY = if (meta.tint != TintState.NONE) (0.5f - meta.tintBri) else 0f
+                            ((meta.exposure - paletteY).coerceIn(-1f, 1f) / 2f + 0.5f).coerceIn(0f, 1f)
+                        },
                         sat = 0.5f,
                         con = (meta.contrast / 2f + 0.5f).coerceIn(0f, 1f),
                     )
@@ -909,16 +915,21 @@ private data class EditState(
  *
  * 关键对齐（修复"相册改滤镜与拍照拍出来不一致"）：相机侧 [CameraViewModel.effective] 中
  * 暖/冷色盘的两个轴贡献为：
- *   - X(饱和度) → saturation 通道，系数 SAT_SCALE=1；
- *   - Y(明暗)   → exposure 通道（与"亮度"滤镜合并），系数 BRIGHT_SCALE=0.5；
+ *   - X(饱和度) → saturation 通道；
+ *   - 暖/冷选择  → warmth 通道；
+ *   - Y(明暗)    → exposure 通道（仅调色盘激活时），系数与相机 BRIGHT_SCALE=0.5 一致：
+ *                 相机 bright = (0.5 - tintBri) * 2 * 0.5 = (0.5 - tintBri)；
+ *                 但【不】并入 ADJUST 的"亮度"滑块——它仅停留在滤镜栏的调色盘内
+ *                 （需求：调色盘暗色不要映射到亮度栏，滤镜栏上下数据不丢失）。
  *   - 相机【从不】写 brightness 通道（亮度走 exposure）。
- * 故这里把色盘 Y 并入 exposure、系数 0.5，brightness 恒为 0，保证同一滤镜在相册编辑与拍照直出像素一致。
- * 相册独立的"亮度"滑块(bri)也映射到 exposure（对应相机"亮度"滤镜），保持通道统一。
+ * 故：亮度栏(exp) 与 调色盘Y 各自独立地经 exposure 通道叠加，二者互不侵占，
+ *     编辑预览/成品与拍照直出完全对应、且滤镜栏取色盘保留原始上下位置。
  */
 private fun EditState.toEffectiveFilter(): EffectiveFilter {
-    val tintSatC = if (tint != TintState.NONE) (tintSat - 0.5f) * 2f else 0f            // SAT_SCALE=1
-    val tintBriC = if (tint != TintState.NONE) (0.5f - tintBri) * 2f * 0.5f else 0f    // BRIGHT_SCALE=0.5，并入 exposure
-        return EffectiveFilter(
+    val tintSatC = if (tint != TintState.NONE) (tintSat - 0.5f) * 2f else 0f            // X(饱和度) → saturation 通道
+    // Y(明暗) → exposure，仅调色盘激活时；与相机 bright=(0.5-tintBri) 一致。保留在调色盘(滤镜栏)内，不并入「亮度」滑块。
+    val tintBriC = if (tint != TintState.NONE) (0.5f - tintBri) else 0f
+    return EffectiveFilter(
         grayscale = grayscale,
         vignette = if (vig) vigInt else 0f,
         exposure = (exp - 0.5f) * 2f + tintBriC,
@@ -1099,7 +1110,7 @@ private fun PhotoEditorOverlay(
                 // 照片层：1:1 方框，编辑基图直接全屏显示（不再有裁切视图）。
                 // clip 使内容不溢出到其它 UI；previewScale 在滤镜页略微缩小（见下方）。
                 Box(Modifier.fillMaxSize().aspectRatio(1f)
-                    .graphicsLayer { scaleX = previewScale; scaleY = previewScale }
+                    .graphicsLayer { scaleX = previewScale * enterScale.value; scaleY = previewScale * enterScale.value }
                     .clipToBounds()) {
                     // 进入编辑/切换照片时：把当前基图作为预览位图（外部编辑结果或上一次编辑结果）
                     LaunchedEffect(bitmapState.value) {
@@ -1111,7 +1122,6 @@ private fun PhotoEditorOverlay(
                         bitmap = liveBitmap.value.asImageBitmap(), contentDescription = "编辑预览", contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize().graphicsLayer {
                             alpha = photoAlpha.value
-                            scaleX = enterScale.value; scaleY = enterScale.value
                             colorFilter = ColorFilter.colorMatrix(composeCm)
                         },
                     )
@@ -1177,7 +1187,12 @@ private fun PhotoEditorOverlay(
                     when (tab) {
                         EditorTab.ADJUST -> {
                             Column(Modifier.fillMaxWidth()) {
-                                EditorSlider("曝光度", state.exp, { onStateChange(state.copy(exp = it)) }, sliderColors, fg, onCommit,
+                                // 黑白：与拍照前「黑白」滤镜一一对应（0~1，0=关闭）；预览与落盘共用 grayscale
+                                EditorSlider("黑白", state.grayscale, { onStateChange(state.copy(grayscale = it)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(grayscale = 0f)); onCommit() }, resetBg = capsuleBg)
+                                Spacer(Modifier.height(10.dp))
+                                // 亮度：与拍照前「亮度」滤镜一一对应（曝光通道，0.5=中性）
+                                EditorSlider("亮度", state.exp, { onStateChange(state.copy(exp = it)) }, sliderColors, fg, onCommit,
                                     onReset = { onStateChange(state.copy(exp = 0.5f)); onCommit() }, resetBg = capsuleBg)
                                 Spacer(Modifier.height(10.dp))
                                 EditorSlider("对比度", state.con, { onStateChange(state.copy(con = it)) }, sliderColors, fg, onCommit,
@@ -1245,27 +1260,23 @@ private fun PhotoEditorOverlay(
     }
 }
 
-/** 滤镜轮播预设：每个预设对应一组编辑状态（暖/冷/黑白/原图），底部滑块控制其强度。 */
-private enum class FilterId { ORIGIN, WARM, COOL, BLACKWHITE }
-private data class FilterPreset(val id: FilterId, val name: String, val warm: Boolean, val cool: Boolean, val blackwhite: Boolean, val hasSlider: Boolean)
+/** 滤镜轮播预设：每个预设对应一组编辑状态（暖/冷/原图），底部滑块控制其强度。黑白已移至「调节」栏。 */
+private enum class FilterId { ORIGIN, WARM, COOL }
+private data class FilterPreset(val id: FilterId, val name: String, val warm: Boolean, val cool: Boolean, val hasSlider: Boolean)
 private val FILTER_PRESETS = listOf(
-    FilterPreset(FilterId.ORIGIN, "原图", false, false, false, false),
-    FilterPreset(FilterId.WARM, "暖色", true, false, false, true),
-    FilterPreset(FilterId.COOL, "冷色", false, true, false, true),
-    FilterPreset(FilterId.BLACKWHITE, "黑白", false, false, true, true),
+    FilterPreset(FilterId.ORIGIN, "原图", false, false, false),
+    FilterPreset(FilterId.WARM, "暖色", true, false, true),
+    FilterPreset(FilterId.COOL, "冷色", false, true, true),
 )
 private fun currentFilterIndex(state: EditState): Int = when {
     state.tint == TintState.WARM -> FILTER_PRESETS.indexOfFirst { it.id == FilterId.WARM }
     state.tint == TintState.COOL -> FILTER_PRESETS.indexOfFirst { it.id == FilterId.COOL }
-    state.grayscale > 0.001f -> FILTER_PRESETS.indexOfFirst { it.id == FilterId.BLACKWHITE }
     else -> FILTER_PRESETS.indexOfFirst { it.id == FilterId.ORIGIN }
 }
 private fun applyFilterPreset(state: EditState, p: FilterPreset): EditState = when (p.id) {
     FilterId.ORIGIN -> state.copy(tint = TintState.NONE)
     FilterId.WARM -> state.copy(tint = TintState.WARM)
     FilterId.COOL -> state.copy(tint = TintState.COOL)
-    // 黑白：选中即开启（当前为 0 则默认全强度），其余调整保持不变；可由滑块调强度、拖到 0 关闭
-    FilterId.BLACKWHITE -> state.copy(grayscale = if (state.grayscale > 0.001f) state.grayscale else 1f)
 }
 
 /**
@@ -1316,23 +1327,16 @@ private fun EditorFilterPanel(
                     },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    // 原图：画禁止 logo；黑白：画黑→白渐变示意；暖/冷：启用可调色盘（需求⑨）
+                    // 原图：画禁止 logo；暖/冷：启用可调色盘（黑白已移至「调节」栏，需求⑨）
                     when (p.id) {
                         FilterId.ORIGIN -> NoFilterIcon(Modifier.size(squareSize), color = fg)
-                        FilterId.BLACKWHITE -> Box(
-                            Modifier.size(squareSize)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(Brush.horizontalGradient(listOf(Color.Black, Color.White))),
-                        )
                         else -> {
-                            // 调色盘取值：暖/冷 = 饱和度(X) + 亮度(Y)
+                            // 调色盘取值：暖/冷 = 饱和度(X)；Y(dotY) 仅作取色指示，不映射亮度
                             val dotX = when (p.id) {
                                 FilterId.WARM, FilterId.COOL -> state.tintSat
-                                else -> 0.5f
                             }
                             val dotY = when (p.id) {
                                 FilterId.WARM, FilterId.COOL -> state.tintBri
-                                else -> 0.5f
                             }
                             ColorSquare(
                                 dotX = dotX, dotY = dotY,
@@ -1340,7 +1344,6 @@ private fun EditorFilterPanel(
                                     onStateChange(
                                         when (p.id) {
                                             FilterId.WARM, FilterId.COOL -> state.copy(tintSat = x, tintBri = y)
-                                            else -> state
                                         },
                                     )
                                 },
@@ -1356,7 +1359,6 @@ private fun EditorFilterPanel(
                         Spacer(Modifier.height(8.dp))
                         val value = when (p.id) {
                             FilterId.WARM, FilterId.COOL -> state.tintStrength
-                            FilterId.BLACKWHITE -> state.grayscale
                             else -> 0.5f
                         }
                         Slider(
@@ -1365,7 +1367,6 @@ private fun EditorFilterPanel(
                                 onStateChange(
                                     when (p.id) {
                                         FilterId.WARM, FilterId.COOL -> state.copy(tintStrength = it)
-                                        FilterId.BLACKWHITE -> state.copy(grayscale = it)
                                         else -> state
                                     },
                                 )
