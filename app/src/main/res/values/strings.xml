@@ -1,3 +1,182 @@
 <resources>
     <string name="app_name">InstCam</string>
+
+    <!-- 设置页 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_group_island">灵动岛与取景框设置</string>
+    <string name="settings_group_anim">动画设置</string>
+    <string name="settings_group_personal">个性化</string>
+    <string name="settings_group_sound">音效</string>
+    <string name="settings_group_misc">杂项</string>
+    <string name="settings_group_developer">Developer</string>
+    <string name="settings_group_thanks">特别鸣谢</string>
+
+    <string name="settings_island">灵动岛</string>
+    <string name="settings_island_desc">记录灵动岛位置与尺寸</string>
+    <string name="settings_viewfinder">取景框</string>
+    <string name="settings_viewfinder_desc">调整取景框位置 / 尺寸 / 圆角</string>
+
+    <string name="settings_anim_toggle">动画总开关</string>
+    <string name="settings_anim_toggle_desc">关闭后仅正常拍照，不播放拍立得动画</string>
+
+    <!-- 音效设置 -->
+    <string name="settings_sound_toggle">音效总开关</string>
+    <string name="settings_sound_toggle_desc">关闭后静音所有系统音效</string>
+    <string name="settings_shutter_sound">快门音效</string>
+    <string name="settings_shutter_sound_desc">拍照时播放快门声</string>
+    <string name="settings_print_sound">打印音效</string>
+    <string name="settings_print_sound_desc">拍立得出片时播放打印声</string>
+    <string name="settings_open_vf">拍照后默认打开取景框</string>
+    <string name="settings_open_vf_desc">拍完自动展开到设置里指定的大小</string>
+
+    <string name="settings_theme">主题颜色</string>
+    <string name="settings_theme_current">当前：%1$s</string>
+
+    <string name="settings_feedback">反馈与Bug提交</string>
+    <string name="settings_feedback_desc">帮助我们改进产品</string>
+    <string name="settings_version">查看最新版本</string>
+    <string name="settings_version_desc">当前版本 V%1$s</string>
+    <string name="settings_reward">打赏作者（B站发电）</string>
+    <string name="settings_reward_desc">如果喜欢 InstCam，可以请作者喝杯咖啡</string>
+
+    <!-- 导入照片 -->
+    <string name="settings_import">导入照片</string>
+    <string name="settings_import_desc">从设备选择照片导入到相册</string>
+    <string name="import_frame_title">添加拍立得边框？</string>
+    <string name="import_frame_msg">要为这张照片添加拍立得白边吗？</string>
+    <string name="import_frame_yes">添加边框</string>
+    <string name="import_frame_no">不添加</string>
+    <string name="import_success">导入成功</string>
+    <string name="import_failed">导入失败</string>
+
+    <string name="settings_language">语言 / Language</string>
+    <string name="settings_language_current">当前：%1$s</string>
+
+    <string name="settings_frame_color">默认拍立得颜色</string>
+    <string name="settings_frame_color_current">自定义相框颜色</string>
+    <string name="dialog_frame_title">拍立得相框颜色</string>
+    <string name="dialog_done">完成</string>
+    <string name="frame_presets">预设</string>
+    <string name="frame_custom">自定义</string>
+    <string name="frame_hue">色相</string>
+    <string name="frame_saturation">饱和度</string>
+    <string name="frame_value">明度</string>
+    <string name="frame_frosted">毛玻璃</string>
+
+    <!-- 灵动岛设置页 -->
+    <string name="di_title">标记灵动岛位置</string>
+    <string name="di_reset">还原默认</string>
+    <string name="di_reset_confirm">确定要将灵动岛参数还原为默认值吗？此操作不可撤销。</string>
+    <string name="di_pos_x">水平位置</string>
+    <string name="di_pos_y">垂直位置</string>
+    <string name="cd_next">下一步</string>
+
+    <!-- 取景框设置页 -->
+    <string name="vf_title">调整取景框</string>
+    <string name="vf_pos_y">上下位置</string>
+    <string name="vf_reset_confirm">确定要将取景框参数还原为默认值吗？此操作不可撤销。</string>
+
+    <!-- 通用参数 -->
+    <string name="common_width">宽度</string>
+    <string name="common_height">高度</string>
+    <string name="common_corner">圆角</string>
+    <string name="action_reset">还原</string>
+
+    <!-- 主题选项 -->
+    <string name="theme_light">浅色</string>
+    <string name="theme_dark">深色</string>
+    <string name="theme_system">跟随系统</string>
+
+    <!-- 语言选项 -->
+    <string name="lang_system">系统默认</string>
+    <string name="lang_zh_hans">简体中文</string>
+    <string name="lang_zh_hant">繁體中文</string>
+    <string name="lang_en">English</string>
+
+    <!-- 对话框 -->
+    <string name="dialog_cancel">取消</string>
+    <string name="dialog_theme_title">主题颜色</string>
+    <string name="dialog_language_title">语言 / Language</string>
+
+    <!-- 引导页：权限请求 -->
+    <string name="permission_need">需要授权后才能使用相机</string>
+    <string name="permission_camera">授予相机权限</string>
+    <string name="permission_camera_granted">✓ 相机已授权</string>
+    <string name="permission_photos">授予相册权限</string>
+    <string name="permission_photos_granted">✓ 相册已授权</string>
+    <string name="permission_location">授予定位权限</string>
+    <string name="permission_location_granted">✓ 定位已授权</string>
+    <string name="permission_location_desc">用于记录照片位置</string>
+
+    <!-- 内建编辑器：相框 -->
+    <string name="editor_frame_enable">启用相框</string>
+    <string name="editor_frame_color">相框颜色</string>
+    <string name="editor_tab_adjust">调节</string>
+    <string name="editor_tab_filter">滤镜</string>
+    <string name="editor_tab_frame">相框</string>
+
+    <!-- 内建编辑器：滑块 -->
+    <string name="editor_slider_grayscale">黑白</string>
+    <string name="editor_slider_brightness">亮度</string>
+    <string name="editor_slider_contrast">对比度</string>
+    <string name="editor_slider_saturation">饱和度</string>
+    <string name="editor_slider_vignette">暗角</string>
+    <string name="editor_cannot_edit">无法编辑此照片</string>
+
+    <!-- 内建编辑器：滤镜名 -->
+    <string name="filter_origin">原图</string>
+    <string name="filter_warm">暖色</string>
+    <string name="filter_cool">冷色</string>
+    <string name="filter_none">无滤镜</string>
+
+    <!-- 内建编辑器：无障碍描述 -->
+    <string name="cd_back">返回</string>
+    <string name="cd_system_edit">系统编辑</string>
+    <string name="cd_custom_edit">自写编辑</string>
+    <string name="cd_undo">撤销</string>
+    <string name="cd_redo">重做</string>
+    <string name="cd_save">保存</string>
+    <string name="cd_edit_preview">编辑预览</string>
+    <string name="cd_restore">复原</string>
+    <string name="cd_view_photo">查看照片</string>
+
+    <!-- 拍照页（相机/相册） -->
+    <string name="camera_hint_swipe_down">向下滑动打开相机</string>
+    <string name="camera_hint_marked">标有 </string>
+    <string name="camera_hint_slide_param"> 图标的区域左右滑动可以调节参数</string>
+    <string name="camera_hint_longpress">长按照片可以批量编辑</string>
+    <string name="camera_selected">已选 %1$d</string>
+    <string name="camera_select_all">全选</string>
+    <string name="camera_deselect_all">取消全选</string>
+    <string name="camera_share">分享</string>
+    <string name="camera_share_photos">分享 %1$d 张照片</string>
+    <string name="camera_share_single">分享照片</string>
+    <string name="camera_delete_photos">删除照片</string>
+    <string name="camera_delete_confirm">确定要删除选中的 %1$d 张照片吗？此操作不可撤销。</string>
+    <string name="camera_delete">删除</string>
+    <string name="viewer_delete_photo">删除照片</string>
+    <string name="viewer_delete_confirm">确定要删除这张照片吗？</string>
+
+    <!-- 过渡动画 / 操作按钮 -->
+    <string name="action_adjust">调整</string>
+    <string name="action_share">分享</string>
+    <string name="toast_share_failed">分享失败：%1$s</string>
+    <string name="unknown_error">未知错误</string>
+    <string name="cd_delete">删除</string>
+    <string name="cd_flash">闪光灯</string>
+    <string name="cd_switch_camera">切换摄像头</string>
+    <string name="cd_settings">设置</string>
+    <string name="cd_effects">特效</string>
+    <string name="param_default">默认</string>
+    <string name="param_auto">自动</string>
+    <string name="param_focus_distance">对焦距离</string>
+    <string name="param_shutter_speed">快门速度</string>
+
+    <!-- 内建编辑器：放弃修改确认 -->
+    <string name="editor_discard_title">放弃修改</string>
+    <string name="editor_discard_text_can_restore">当前编辑尚未保存。可放弃修改，或一并还原为裁切前的原图。</string>
+    <string name="editor_discard_text">当前编辑尚未保存，确定放弃这些修改吗？</string>
+    <string name="editor_discard">放弃</string>
+    <string name="editor_restore_original">还原原图</string>
+    <string name="editor_continue_edit">继续编辑</string>
 </resources>

@@ -3,7 +3,8 @@ package com.genkaim.picocam.dynamic
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import com.genkaim.picocam.BaseActivity
+import com.genkaim.picocam.R
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -69,7 +71,7 @@ import kotlin.math.roundToInt
  * 把参数（水平/垂直位置、宽、高、圆角）存进 DataStore 供后续使用。
  * 全屏沉浸，顶部留白区与真实屏幕顶部 1:1 对齐，方便对准物理挖孔。
  */
-class DynamicIslandSettingsActivity : ComponentActivity() {
+class DynamicIslandSettingsActivity : BaseActivity() {
     private val vfLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         // 取景框设置完成（点「完成」）后，连同本页一起关闭，回到主界面
         finish()
@@ -216,11 +218,11 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                             .clickable(onClick = onBack),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = onSurface(isDark))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back), tint = onSurface(isDark))
                     }
                     Spacer(Modifier.width(12.dp))
                 }
-                Text("标记灵动岛位置", style = MaterialTheme.typography.titleLarge, color = onSurface(isDark))
+                Text(stringResource(R.string.di_title), style = MaterialTheme.typography.titleLarge, color = onSurface(isDark))
                 Spacer(Modifier.weight(1f))
                 // 引导流程：右上箭头进入取景框设置
                 if (onboarding) {
@@ -234,7 +236,7 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = "下一步",
+                            contentDescription = stringResource(R.string.cd_next),
                             tint = if (isDark) Color.White else RetroCream,
                         )
                     }
@@ -260,14 +262,14 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("还原默认", style = MaterialTheme.typography.titleMedium, color = RetroCream)
+                    Text(stringResource(R.string.di_reset), style = MaterialTheme.typography.titleMedium, color = RetroCream)
                 }
 
-                SettingSlider("水平位置", posX, { posX = it }, { commit() }, 0f..1f, "${(posX * 100).roundToInt()}%", isDark)
-                SettingSlider("垂直位置", posY, { posY = it }, { commit() }, 0f..0.3f, "${(posY * 100).roundToInt()}%", isDark)
-                SettingSlider("宽度", width, { width = it }, { commit() }, 16f..400f, "${width.roundToInt()} dp", isDark)
-                SettingSlider("高度", height, { height = it }, { commit() }, 16f..160f, "${height.roundToInt()} dp", isDark)
-                SettingSlider("圆角", corner, { corner = it }, { commit() }, 0f..80f, "${corner.roundToInt()} dp", isDark)
+                SettingSlider(stringResource(R.string.di_pos_x), posX, { posX = it }, { commit() }, 0f..1f, "${(posX * 100).roundToInt()}%", isDark)
+                SettingSlider(stringResource(R.string.di_pos_y), posY, { posY = it }, { commit() }, 0f..0.3f, "${(posY * 100).roundToInt()}%", isDark)
+                SettingSlider(stringResource(R.string.common_width), width, { width = it }, { commit() }, 16f..400f, "${width.roundToInt()} dp", isDark)
+                SettingSlider(stringResource(R.string.common_height), height, { height = it }, { commit() }, 16f..160f, "${height.roundToInt()} dp", isDark)
+                SettingSlider(stringResource(R.string.common_corner), corner, { corner = it }, { commit() }, 0f..80f, "${corner.roundToInt()} dp", isDark)
             }
         }
 
@@ -276,16 +278,16 @@ private fun DynamicIslandSettingsContent(onboarding: Boolean, onNext: () -> Unit
                 onDismissRequest = { showReset = false },
                 // 容器色随深色模式：深色=深灰卡片，浅色=奶油白
                 containerColor = surfaceCard(isDark),
-                title = { Text("还原默认", color = onSurface(isDark)) },
-                text = { Text("确定要将灵动岛参数还原为默认值吗？此操作不可撤销。", color = onSurface(isDark)) },
+                title = { Text(stringResource(R.string.di_reset), color = onSurface(isDark)) },
+                text = { Text(stringResource(R.string.di_reset_confirm), color = onSurface(isDark)) },
                 confirmButton = {
                     TextButton(onClick = {
                         scope.launch { context.saveDynamicIsland { DynamicIslandConfig() } }
                         showReset = false
-                    }) { Text("还原", color = RetroRust) }
+                    }) { Text(stringResource(R.string.action_reset), color = RetroRust) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showReset = false }) { Text("取消", color = onSurfaceSoft(isDark)) }
+                    TextButton(onClick = { showReset = false }) { Text(stringResource(R.string.dialog_cancel), color = onSurfaceSoft(isDark)) }
                 },
             )
         }

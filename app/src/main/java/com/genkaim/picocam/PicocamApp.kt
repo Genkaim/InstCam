@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class PicocamApp : Application() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -35,7 +36,9 @@ class PicocamApp : Application() {
             .build()
         Coil.setImageLoader(imageLoader)
 
-        // 预读配置进内存缓存，确保首屏直接用真实参数渲染，不闪默认态
-        scope.launch { AppPrefs.preload(applicationContext) }
+        // 同步预读配置进内存缓存（block 直到读完），确保首个 Activity 的 attachBaseContext 即拿到正确语言/主题，
+        // 避免「先用默认再跳变」。Coil 预热的异步任务仍走 scope.launch，不阻塞启动。
+        runBlocking { AppPrefs.preload(applicationContext) }
+        scope.launch { /* 预留：后续可在此做耗时的资源预热 */ }
     }
 }

@@ -69,6 +69,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.res.stringResource
+import com.genkaim.picocam.R
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -129,6 +131,7 @@ import com.genkaim.picocam.ui.components.ViewfinderFrame
 import com.genkaim.picocam.ui.components.ZoomBar
 import com.genkaim.picocam.ui.components.SlideHintIcon
 import com.genkaim.picocam.dynamic.AppPrefs
+import com.genkaim.picocam.dynamic.LangMode
 import com.genkaim.picocam.dynamic.DynamicIslandConfig
 import com.genkaim.picocam.dynamic.DynamicIslandSettingsActivity
 import com.genkaim.picocam.dynamic.ThemeMode
@@ -151,10 +154,15 @@ private const val USE_SYSTEM_EDITOR = false
 /** 白色快门闪屏动画时长（ms）。闪屏播放完后再开始取景框→灵动岛 morph，二者共用此常量保证时序一致。 */
 private const val SHUTTER_FLASH_MS = 150
 
+/** 白闪结束到取景框动画开始的额外延迟（ms）。0 = 闪完即 morph。 */
+private const val POST_FLASH_DELAY_MS = 200
+
 @Composable
 fun CameraScreen(vm: CameraViewModel = viewModel()) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // 初始化音效
+    com.genkaim.picocam.camera.SoundEffects.init(context)
     var hasCamPerm by remember { mutableStateOf(
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
     ) }
@@ -352,6 +360,8 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                 // 先等白色闪屏动画播完，再开始取景框→灵动岛 morph
                 scope.launch {
                     delay(SHUTTER_FLASH_MS.milliseconds)
+                    // 白闪结束后额外等待 POST_FLASH_DELAY_MS，再开始取景框 morph
+                    if (POST_FLASH_DELAY_MS > 0) delay(POST_FLASH_DELAY_MS.milliseconds)
                     // 取景框快照到展开态，使过渡 overlay 的 morph 从展开态→灵动岛 视觉正确
                     progressState.floatValue = 1f
                     transitionFile = file
@@ -631,7 +641,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         CameraParamItem(
-                            name = "对焦距离",
+                            name = stringResource(R.string.param_focus_distance),
                             valueText = vm.focusDistanceText(),
                             fraction = vm.focusFraction,
                             onFractionChange = vm::updateFocusFraction,
@@ -639,7 +649,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                             modifier = Modifier.weight(1f),
                         )
                         CameraParamItem(
-                            name = "快门速度",
+                            name = stringResource(R.string.param_shutter_speed),
                             valueText = vm.shutterSpeedText(),
                             fraction = vm.shutterFraction,
                             onFractionChange = vm::updateShutterFraction,
@@ -664,6 +674,9 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
 
             // 剩余区域：相册（底层）+ 效果面板（悬浮层），weight(1f) 吸收全部高度变化（折叠时相册占满）
             Box(Modifier.weight(1f).fillMaxWidth()) {
+                val langMode = AppPrefs.lang.value.mode
+                val isEnglish = langMode == LangMode.EN ||
+                    (langMode == LangMode.SYSTEM && java.util.Locale.getDefault().language.startsWith("en"))
                 // 空相册占位：照片加载出来后用 fadeOut 渐出（而非瞬间消失）。
                 // 用完全限定 androidx.compose.animation.AnimatedVisibility 避免解析到外层 ColumnScope 的扩展。
                 androidx.compose.animation.AnimatedVisibility(
@@ -678,14 +691,25 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                         contentAlignment = Alignment.Center,
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("向下滑动打开相机", style = MaterialTheme.typography.bodyLarge, color = onSurfaceSoft(isDark))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("标有 ", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
-                                SlideHintIcon(color = onSurfaceSoft(isDark))
-                                Text(" 图标的区域左右滑动可以调节参数", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                            Text(stringResource(R.string.camera_hint_swipe_down), style = MaterialTheme.typography.bodyLarge, color = onSurfaceSoft(isDark))
+                            if (isEnglish) {
+                                // 英文：图标后强制换行，避免 "Areas with the [icon] icon..." 在一行内被挤断
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(stringResource(R.string.camera_hint_marked), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                                        SlideHintIcon(color = onSurfaceSoft(isDark))
+                                    }
+                                    Text(stringResource(R.string.camera_hint_slide_param), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                                }
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(stringResource(R.string.camera_hint_marked), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                                    SlideHintIcon(color = onSurfaceSoft(isDark))
+                                    Text(stringResource(R.string.camera_hint_slide_param), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                                }
                             }
                             // 长按提示：拍下首张照片后，长按照片即可进入批量编辑模式（多选删除/分享）
-                            Text("长按照片可以批量编辑", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
+                            Text(stringResource(R.string.camera_hint_longpress), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark))
                         }
                     }
                 }
@@ -795,7 +819,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text("取消", color = onSurface(isDark), maxLines = 1, fontSize = 13.sp)
+                                AutoSizeText(stringResource(R.string.dialog_cancel), modifier = Modifier.fillMaxWidth(), maxFontSize = 13.sp, color = onSurface(isDark), textAlign = TextAlign.Center)
                             }
                             Spacer(Modifier.width(8.dp))
                             // 已选计数：固定宽度，容纳"已选 99"
@@ -803,11 +827,12 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                 modifier = Modifier.width(52.dp).height(36.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    "已选 ${selectedPhotos.size}",
+                                AutoSizeText(
+                                    stringResource(R.string.camera_selected, selectedPhotos.size),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    maxFontSize = 13.sp,
                                     color = onSurfaceSoft(isDark),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
+                                    textAlign = TextAlign.Center,
                                 )
                             }
                             Spacer(Modifier.width(4.dp))
@@ -824,15 +849,17 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                     },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    if (allSelected) "取消全选" else "全选",
+                                AutoSizeText(
+                                    if (allSelected) stringResource(R.string.camera_deselect_all) else stringResource(R.string.camera_select_all),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    maxFontSize = 13.sp,
                                     color = onSurfaceSoft(isDark),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
+                                    textAlign = TextAlign.Center,
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
                             // 分享胶囊：固定宽度
+                            val shareChooserTitle = stringResource(R.string.camera_share_photos, selectedPhotos.size)
                             Box(
                                 Modifier.width(60.dp).height(44.dp).clip(RoundedCornerShape(22.dp))
                                     .background(if (selectedPhotos.size > 0) surfaceCard(isDark) else onSurfaceSoft(isDark).copy(alpha = 0.3f))
@@ -852,16 +879,17 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                                                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
                                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                             }
-                                            context.startActivity(Intent.createChooser(sendIntent, "分享 ${selectedPhotos.size} 张照片"))
+                                            context.startActivity(Intent.createChooser(sendIntent, shareChooserTitle))
                                         }
                                     },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    "分享",
+                                AutoSizeText(
+                                    stringResource(R.string.camera_share),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    maxFontSize = 13.sp,
                                     color = if (selectedPhotos.size > 0) onSurface(isDark) else onSurfaceSoft(isDark),
-                                    maxLines = 1,
-                                    fontSize = 13.sp,
+                                    textAlign = TextAlign.Center,
                                 )
                             }
                             Spacer(Modifier.width(8.dp))
@@ -874,7 +902,7 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
                             ) {
                                 Icon(
                                     Icons.Filled.Delete,
-                                    contentDescription = "删除",
+                                    contentDescription = stringResource(R.string.cd_delete),
                                     tint = if (selectedPhotos.size > 0) RetroRust else onSurfaceSoft(isDark),
                                 )
                             }
@@ -970,22 +998,26 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
         val cameraLifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(cameraLifecycleOwner) {
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME && pendingEditExit) {
-                    pendingEditExit = false
-                    transitionFile?.let { f ->
-                        // 确保新照片已在相册列表（编辑可能很快返回，叠加层动画的 onAddToAlbum 尚未执行）
-                        vm.setPlaceholder(f)
-                        scope.launch { vm.refreshPhotosSync() }
-                    }
-                    vm.clearPlaceholder()
-                    animating = false
-                    transitionFile = null
-                    vm.restoreZoom()
-                    // 与正常关闭一致：展开取景框回到相机态
-                    if (anim.openViewfinderAfterCapture) {
-                        scope.launch {
-                            animate(progressState.floatValue, 1f, animationSpec = tween(durationMillis = 380)) { v, _ ->
-                                progressState.floatValue = v
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    // 从设置页导入照片等外部变更后，回到相机时刷新相册
+                    vm.refreshPhotos()
+                    if (pendingEditExit) {
+                        pendingEditExit = false
+                        transitionFile?.let { f ->
+                            // 确保新照片已在相册列表（编辑可能很快返回，叠加层动画的 onAddToAlbum 尚未执行）
+                            vm.setPlaceholder(f)
+                            scope.launch { vm.refreshPhotosSync() }
+                        }
+                        vm.clearPlaceholder()
+                        animating = false
+                        transitionFile = null
+                        vm.restoreZoom()
+                        // 与正常关闭一致：展开取景框回到相机态
+                        if (anim.openViewfinderAfterCapture) {
+                            scope.launch {
+                                animate(progressState.floatValue, 1f, animationSpec = tween(durationMillis = 380)) { v, _ ->
+                                    progressState.floatValue = v
+                                }
                             }
                         }
                     }
@@ -1000,18 +1032,18 @@ private fun CameraContent(vm: CameraViewModel, onSelect: (File, Boolean) -> Unit
             AlertDialog(
                 onDismissRequest = { showDeleteConfirm = false },
                 containerColor = surfaceCard(isDark),
-                title = { Text("删除照片", fontFamily = FontFamily.Default, color = onSurface(isDark)) },
-                text = { Text("确定要删除选中的 ${selectedPhotos.size} 张照片吗？此操作不可撤销。", fontFamily = FontFamily.Default, color = onSurface(isDark)) },
+                title = { Text(stringResource(R.string.camera_delete_photos), fontFamily = FontFamily.Default, color = onSurface(isDark)) },
+                text = { Text(stringResource(R.string.camera_delete_confirm, selectedPhotos.size), fontFamily = FontFamily.Default, color = onSurface(isDark)) },
                 confirmButton = {
                     TextButton(onClick = {
                         selectedPhotos.toList().forEach { vm.deletePhoto(it) }
                         selectionMode = false
                         selectedPhotos.clear()
                         showDeleteConfirm = false
-                    }) { Text("删除", fontFamily = FontFamily.Default, color = RetroRust) }
+                    }) { Text(stringResource(R.string.camera_delete), fontFamily = FontFamily.Default, color = RetroRust) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showDeleteConfirm = false }) { Text("取消", fontFamily = FontFamily.Default, color = onSurfaceSoft(isDark)) }
+                    TextButton(onClick = { showDeleteConfirm = false }) { Text(stringResource(R.string.dialog_cancel), fontFamily = FontFamily.Default, color = onSurfaceSoft(isDark)) }
                 },
             )
         }
@@ -1077,7 +1109,8 @@ private fun GridPhotoCard(
     // 边框渐出（仅深色模式）：照片飞入落点后，落点格子的边框平滑淡出至透明，避免深色模式下强边框"硬切"。
     // 与渐入共用 produceState（key=justLanded），每次落点变化强制重跑逐帧动画，深色模式下可靠触发、不依赖 Animatable。
     val borderOutAlpha: Float by produceState(initialValue = 1f, key1 = justLanded) {
-        if (justLanded && isDark) {
+        // 最新照片（首图）只做渐入、边框保持可见；其余落点格在深色模式下渐出，避免强边框硬切
+        if (justLanded && isDark && !isNewest) {
             val startMs = System.currentTimeMillis()
             val durationMs = 350L
             while (true) {
@@ -1091,13 +1124,15 @@ private fun GridPhotoCard(
         }
     }
     val selBase = if (isSelected) 1f else if (isDark) 0.8f else 0.3f
-    val borderBaseColor = if (isSelected) RetroCream else onSurfaceSoft(isDark)
+    // 选中态颜色：浅色模式用深铁锈红、深色模式用浅奶油白 → 选择框始终与背景形成对比
+    val selColor = if (isSelected) (if (isDark) RetroCream else RetroRust) else onSurfaceSoft(isDark)
+    val borderBaseColor = selColor
     val borderWidthDp = if (isSelected) 2.dp else 1.dp
     Box(
         Modifier
             .aspectRatio(fileRatio)
             .clip(RoundedCornerShape(4.dp))
-            .background(if (isSelected) RetroRust.copy(alpha = 0.35f) else surfaceCard(isDark))
+            .background(if (isSelected) selColor.copy(alpha = 0.35f) else surfaceCard(isDark))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
         // 用 AsyncImage 替代 SubcomposeAsyncImage：避免子组合（subcomposition）开销，
@@ -1108,17 +1143,13 @@ private fun GridPhotoCard(
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
         )
-        // 深色模式：照片上叠一层浅灰色遮罩
-        if (isDark) {
-            Box(Modifier.fillMaxSize().background(Color(0x1AFFFFFF)))
-        }
-        // 多选模式：右上角选中圆（填充色代表已选，无色=未选，无勾）
+            // 多选模式：右上角选中圆（填充色代表已选，无色=未选，无勾）
         if (selectionMode) {
             Box(
                 Modifier.align(Alignment.TopEnd).padding(4.dp).size(20.dp)
                     .clip(CircleShape)
-                    .background(if (isSelected) RetroRust else Color(0x66000000))
-                    .border(1.5.dp, if (isSelected) RetroCream else Color(0x88FFFFFF), CircleShape),
+                    .background(if (isSelected) selColor else Color(0x66000000))
+                    .border(1.5.dp, if (isSelected) (if (isDark) RetroRust else RetroCream) else Color(0x88FFFFFF), CircleShape),
             )
         }
         // 边框：最末尾 child，用于确保在所有 sibling 之上。
@@ -1148,7 +1179,7 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, hasPhoto
     ) {
         Text("InstCam", style = MaterialTheme.typography.titleLarge, color = onSurface(isDark))
         Spacer(Modifier.height(12.dp))
-        Text("需要授权后才能使用相机", style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark), textAlign = TextAlign.Center)
+        Text(stringResource(R.string.permission_need), style = MaterialTheme.typography.bodyMedium, color = onSurfaceSoft(isDark), textAlign = TextAlign.Center)
         Spacer(Modifier.height(32.dp))
 
         Box(
@@ -1160,10 +1191,13 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, hasPhoto
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                if (hasCamera) "✓ 相机已授权" else "授予相机权限",
-                style = MaterialTheme.typography.titleMedium,
+            AutoSizeText(
+                stringResource(if (hasCamera) R.string.permission_camera_granted else R.string.permission_camera),
+                maxFontSize = 16.sp,
                 color = if (hasCamera) onSurface(isDark) else RetroCream,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
             )
         }
 
@@ -1178,10 +1212,13 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, hasPhoto
             .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                if (hasPhotos) "✓ 相册已授权" else "授予相册权限",
-                style = MaterialTheme.typography.titleMedium,
+            AutoSizeText(
+                stringResource(if (hasPhotos) R.string.permission_photos_granted else R.string.permission_photos),
+                maxFontSize = 16.sp,
                 color = if (hasPhotos) onSurface(isDark) else RetroCream,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
             )
         }
 
@@ -1196,14 +1233,17 @@ private fun PermissionRequest(hasCamera: Boolean, hasLocation: Boolean, hasPhoto
             .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                if (hasLocation) "✓ 定位已授权" else "授予定位权限",
-                style = MaterialTheme.typography.titleMedium,
+            AutoSizeText(
+                stringResource(if (hasLocation) R.string.permission_location_granted else R.string.permission_location),
+                maxFontSize = 16.sp,
                 color = if (hasLocation) onSurface(isDark) else RetroCream,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
             )
         }
         Text(
-            "用于记录照片位置",
+            stringResource(R.string.permission_location_desc),
             style = MaterialTheme.typography.titleMedium,
             fontSize = 13.sp,
             color = onSurface(isDark),

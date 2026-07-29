@@ -23,6 +23,9 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.genkaim.picocam.dynamic.AppPrefs
+import com.genkaim.picocam.dynamic.AppLocale
+import com.genkaim.picocam.dynamic.LangMode
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,12 +60,16 @@ import com.genkaim.picocam.camera.BRIGHTNESS_KEY
 import com.genkaim.picocam.camera.EffectiveFilter
 import com.genkaim.picocam.camera.FILTER_KEYS
 import com.genkaim.picocam.camera.FilterParams
+import com.genkaim.picocam.camera.SoundEffects
 
 /** 进程内单例：DataStore 存于 context.filesDir/datastore/filter_state.preferences_pb。 */
 private val Context.filterDataStore: DataStore<Preferences> by preferencesDataStore(name = "filter_state")
 
 /** 相册首屏一次性加载的最近照片数；其余在后台补全，避免进入页面时被全量目录扫描+排序阻塞。 */
 private const val ALBUM_FIRST_PAGE = 60
+
+/** 点按拍照按钮→白闪开始的延迟（ms）。0 = 立即闪白；增大则按下后先有间隙再闪。 */
+private const val SHUTTER_FLASH_DELAY_MS = 450
 
 /** 调色盘三态：无滤镜 / 暖色 / 冷色，由底部箭头循环切换，替代原独立的暖/冷滤镜。 */
 enum class TintState { NONE, WARM, COOL }
@@ -394,14 +402,32 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         val file = PhotoStorage.generateFile(getApplication())
         val eff = effective
         _hasTakenPhoto.value = true   // 第一次按下快门后，空相册引导光晕不再显示
-        // 在 CameraX 抓取前立即闪白（用 tryEmit 不挂起）：给用户最快反馈
-        _shutterFlash.tryEmit(Unit)
-        // 立即发射 captureStarted：让相机页同步启动"取景框→灵动岛"morph（与按下快门对齐，
-        // 不受不同机型拍照延迟影响）。照片内容就绪仍由 onImageSaved→photoCaptured→photoVersion 控制。
-        _captureStarted.tryEmit(file)
-        imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+        // 快门音效始终立即触发（不受 delay 影响）
+        SoundEffects.playShutter()
+        // 闪白、morph、拍照：仅在快门音效开启时应用 SHUTTER_FLASH_DELAY_MS 延迟
+        val soundEnabled = AppPrefs.sound.value.enabled && AppPrefs.sound.value.shutterSound
+        if (SHUTTER_FLASH_DELAY_MS > 0 && soundEnabled) {
+            viewModelScope.launch {
+                delay(SHUTTER_FLASH_DELAY_MS.toLong())
+                _shutterFlash.tryEmit(Unit)
+                _captureStarted.tryEmit(file)
+                imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
+                    takePictureCallback(file, eff))
+            }
+        } else {
+            _shutterFlash.tryEmit(Unit)
+            _captureStarted.tryEmit(file)
+            imageCapture.takePicture(ImageCapture.OutputFileOptions.Builder(file).build(), ContextCompatExecutor(),
+                takePictureCallback(file, eff))
+        }
+    }
+
+    /**
+     * 取 callback lambda 为具名函数，避免延迟分支与非延迟分支重复定义回调对象。
+     */
+    private fun takePictureCallback(file: File, eff: EffectiveFilter): ImageCapture.OnImageSavedCallback =
+        object : ImageCapture.OnImageSavedCallback {
+            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                     val loc = lastLocation
                     lastLocation = null
                     // 关键：不在这里 setPlaceholder，也不立即更新 _photos。
@@ -415,7 +441,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     viewModelScope.launch {
                         // 直接做 addPolaroidFrame，_photos 由 onAddToAlbum.refreshPhotosSync 触发更新
                         withContext(Dispatchers.IO) {
-                            PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff)
+                            PhotoStorage.addPolaroidFrame(file = file, location = loc, eff = eff, frameColor = AppPrefs.frame.value.color, isFrosted = AppPrefs.frame.value.isFrosted)
+                            // 记录拍照"相框选择"侧车：无论是否有滤镜都写，保证编辑默认与成品一致
+                            // （拍照选了毛玻璃 → 编辑该照片默认毛玻璃；选了纯色 → 默认纯色）
+                            PhotoStorage.saveFrameMeta(file, AppPrefs.frame.value.isFrosted, AppPrefs.frame.value.color)
                             // 记录拍照滤镜元信息（原图侧车已由 addPolaroidFrame 在应用滤镜时保存）：
                             // 供编辑页默认选中该滤镜，使编辑预览与相册已滤镜照片一致
                             if (eff != EffectiveFilter()) {
@@ -444,8 +473,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 override fun onError(exc: ImageCaptureException) = Unit
-            })
-    }
+            }
 
     fun deletePhoto(file: File) {
         // 同时删除缩略图与拍照原图/滤镜元信息侧车，并同步删除系统相册镜像副本
@@ -538,7 +566,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     /** 对焦距离文本：自动 / "x.xx m"（连续距离，从近到远）。设备不报最小对焦距离时退化为参考值，始终显示距离而非"固定"。 */
     fun focusDistanceText(): String {
-        if (focusFraction <= 0.001f) return "自动"
+        if (focusFraction <= 0.001f) return langContext().getString(R.string.param_auto)
         val minF = if (minFocusDistance > 0f) minFocusDistance else REF_MIN_FOCUS_DIOPTER
         val meters = (1f / (focusFraction * minF)).coerceAtLeast(0.05f)
         return if (meters >= 1f) "%.1f m".format(meters) else "%.2f m".format(meters)
@@ -546,10 +574,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     /** 快门速度文本：自动 / "1/xxx" / "x.x s"。 */
     fun shutterSpeedText(): String {
-        if (shutterFraction <= 0.001f) return "自动"
+        if (shutterFraction <= 0.001f) return langContext().getString(R.string.param_auto)
         val secs = shutterSeconds(shutterFraction)
         return if (secs >= 1.0) "%.1f s".format(secs) else "1/%d".format((1.0 / secs).roundToInt().coerceAtLeast(2))
     }
+    /** 返回按 App 语言包裹的 Context，用于在 ViewModel 中获取本地化字符串。 */
+    private fun langContext(): Context =
+        AppLocale.wrap(getApplication(), AppPrefs.lang.value.mode)
+
     fun refreshPhotos() {
         viewModelScope.launch {
             // 首屏只取最近 ALBUM_FIRST_PAGE 张，先让相册快速出图；其余后台继续加载

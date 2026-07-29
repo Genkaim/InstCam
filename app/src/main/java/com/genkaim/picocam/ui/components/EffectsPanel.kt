@@ -81,14 +81,27 @@ import kotlin.math.sqrt
 import kotlin.math.roundToInt
 import com.genkaim.picocam.CameraViewModel
 import com.genkaim.picocam.TintState
+import com.genkaim.picocam.R
 import com.genkaim.picocam.ui.theme.RetroBrown
 import com.genkaim.picocam.ui.theme.RetroDarkBg
 import com.genkaim.picocam.ui.theme.RetroDarkSurface
 import com.genkaim.picocam.ui.theme.RetroRust
 import com.genkaim.picocam.ui.theme.RetroSoftRed
+import androidx.compose.ui.res.stringResource
+import com.genkaim.picocam.ui.LangAutoSizeText
+import com.genkaim.picocam.ui.ColumnMinFontSize
+import com.genkaim.picocam.ui.rememberColumnMinFontSize
 
 /** 横滑调节映射：整钮宽的该比例对应的位移即达到满量程(0~1)，值越小手指行程越短。 */
 private const val DRAG_FULL_FRACTION = 0.7f
+
+/** 内部滤镜键（用于 vm.filters 映射，恒为固定中文常量）映射到可本地化的字符串资源。 */
+private fun filterNameRes(key: String): Int = when (key) {
+    "黑白" -> R.string.editor_slider_grayscale
+    "暗角" -> R.string.editor_slider_vignette
+    "亮度" -> R.string.editor_slider_brightness
+    else -> R.string.editor_slider_grayscale
+}
 
 /** 调色盘网格：点间距(GRID_SPACING_DP)与边缘留白(GRID_MARGIN_DP)恒定为设计基准，
  *  调色盘随多屏适配缩放时按尺寸重算点数 → 点密度(间距)不变。
@@ -183,6 +196,8 @@ fun EffectsPanel(
     // 退出动画期间沿用最后一次定位，避免 dragHintName 置空后偏移算成 (0,0) 导致弹窗瞬移、退出动画看不见
     var lastBtnPos by remember { mutableStateOf(Offset.Zero) }
     var lastPanelPos by remember { mutableStateOf(Offset.Zero) }
+    // 右侧参数列共享最小字号（含 3 个滤镜 + 还原）：整列标签统一到最窄所需字号
+    val rightColMin = rememberColumnMinFontSize()
     // 滤镜切换(TintSelector)横滑示意：拖拽时在切换钮上方弹出示意气泡
     var tintDragging by remember { mutableStateOf(false) }
     var tintBtnPos by remember { mutableStateOf(Offset.Zero) }
@@ -353,6 +368,7 @@ fun EffectsPanel(
                                             val fp = vm.filters[name]!!
                                             FilterBtn(
                                                 name = name,
+                                                displayName = stringResource(filterNameRes(name)),
                                                 active = false,
                                                 applied = fp.enabled,
                                                 onSelect = {},
@@ -366,6 +382,7 @@ fun EffectsPanel(
                                                 onDragHintStart = { n -> dragHintName = n },
                                                 onDragHintEnd = { dragHintName = null },
                                                 isDark = isDark,
+                                                group = rightColMin,
                                             )
                                             Spacer(Modifier.height(8.dp))
                                         }
@@ -373,7 +390,7 @@ fun EffectsPanel(
                                 }
                                 Spacer(Modifier.height(listRestoreGap))
                                 // 还原：与左侧切换按钮同高度，靠上
-                                FilterBtn("还原", active = false, applied = false, showSwitch = false, onSelect = { vm.resetAll() }, onToggle = {}, isDark = isDark, textColor = RetroSoftRed)
+                                FilterBtn(stringResource(R.string.action_reset), active = false, applied = false, showSwitch = false, onSelect = { vm.resetAll() }, onToggle = {}, isDark = isDark, textColor = RetroSoftRed, group = rightColMin)
                             }
                     }
                 }
@@ -459,9 +476,9 @@ internal fun TintSelector(
     onBtnLayout: (String, Offset, Int) -> Unit = { _, _, _ -> },
 ) {
     val name = when (tintState) {
-        TintState.NONE -> "无滤镜"
-        TintState.WARM -> "暖色"
-        TintState.COOL -> "冷色"
+        TintState.NONE -> stringResource(R.string.filter_none)
+        TintState.WARM -> stringResource(R.string.filter_warm)
+        TintState.COOL -> stringResource(R.string.filter_cool)
     }
     var dragAccum by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
@@ -510,7 +527,7 @@ internal fun TintSelector(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Text(name, color = if (isDark) Color.White else RetroBrown, fontSize = nameSize, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, maxLines = 1)
+            LangAutoSizeText(name, color = if (isDark) Color.White else RetroBrown, maxFontSize = nameSize, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
             Spacer(Modifier.width((2 * scale).dp))
             SlideHintIcon(color = hintColor, scale = scale)
         }
@@ -551,9 +568,9 @@ internal fun TintHintBubble(
     modifier: Modifier = Modifier,
 ) {
     val label = when (tintState) {
-        TintState.NONE -> "无滤镜"
-        TintState.WARM -> "暖色"
-        TintState.COOL -> "冷色"
+        TintState.NONE -> stringResource(R.string.filter_none)
+        TintState.WARM -> stringResource(R.string.filter_warm)
+        TintState.COOL -> stringResource(R.string.filter_cool)
     }
     Box(
         modifier
@@ -567,7 +584,7 @@ internal fun TintHintBubble(
             horizontalArrangement = Arrangement.Center,
         ) {
             Text("< ", color = if (isDark) Color(0xFFCFCFCF) else Color(0xFF6B5744), fontSize = 13.sp)
-            Text(label, color = if (isDark) Color.White else RetroBrown, fontSize = 13.sp)
+            LangAutoSizeText(label, color = if (isDark) Color.White else RetroBrown, maxFontSize = 13.sp)
             Text(" >", color = if (isDark) Color(0xFFCFCFCF) else Color(0xFF6B5744), fontSize = 13.sp)
         }
     }
@@ -783,6 +800,7 @@ internal fun ColorSquare(
 @Composable
 internal fun FilterBtn(
     name: String,
+    displayName: String? = null,
     active: Boolean,
     applied: Boolean,
     onSelect: () -> Unit,
@@ -798,6 +816,7 @@ internal fun FilterBtn(
     onDragHintEnd: () -> Unit = {},
     isDark: Boolean = false,
     textColor: Color = (if (isDark) Color(0xFFCFCFCF) else Color(0xFF6B5744)),
+    group: ColumnMinFontSize? = null,
     modifier: Modifier = Modifier,
 ) {
     // 滑块-only 滤镜：记录按钮宽度与拖拽起点，把横向位移映射成强度(0~1)
@@ -863,10 +882,11 @@ internal fun FilterBtn(
                 Modifier.fillMaxWidth().padding(start = 14.dp, end = 56.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    name,
+                LangAutoSizeText(
+                    displayName ?: name,
                     color = if (active) Color.White else textColor,
-                    fontSize = 13.sp,
+                    maxFontSize = 13.sp,
+                    group = group,
                 )
                 // 图标（<> 与方块）比文字淡一档：用更浅的不透明色，避免半透明圆头在箭头顶点处叠加变深
                 val iconColor = if (active) Color(0xFFD9D0C4) else (if (isDark) Color(0xFFCFCFCF) else Color(0xFFB6A796))

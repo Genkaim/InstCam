@@ -22,7 +22,7 @@ import android.os.Bundle
 import android.content.res.Configuration
 import android.provider.MediaStore
 import android.widget.Toast
-import androidx.activity.ComponentActivity
+import com.genkaim.picocam.BaseActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -56,6 +56,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -65,6 +69,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.PhotoFilter
+import androidx.compose.material.icons.filled.CropPortrait
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.automirrored.filled.Undo
@@ -95,6 +101,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -118,6 +125,8 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.geometry.Offset
@@ -148,7 +157,10 @@ import com.genkaim.picocam.camera.PhotoStorage
 import com.genkaim.picocam.camera.buildFilterColorMatrix
 import com.genkaim.picocam.ui.components.ColorSquare
 import com.genkaim.picocam.ui.components.TintArrow
+import com.genkaim.picocam.ui.AutoSizeText
+import com.genkaim.picocam.ui.rememberColumnMinFontSize
 import com.genkaim.picocam.dynamic.AppPrefs
+import com.genkaim.picocam.dynamic.LangMode
 import com.genkaim.picocam.dynamic.isDarkMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -178,7 +190,14 @@ private suspend fun readLocationFromExif(context: Context, file: File): String? 
         if (latLats == null || lngLats == null) return@withContext null
         val lat = parseDms(latLats) * if (latRef == "S") -1 else 1
         val lng = parseDms(lngLats) * if (lngRef == "W") -1 else 1
-        val geocoder = Geocoder(context, Locale.getDefault())
+        // 地址跟随 App 语言（而非系统语言）：中文/英文取对应 Locale，系统默认则回退系统语言
+        val geocoderLocale = when (AppPrefs.lang.value.mode) {
+            LangMode.ZH_HANS -> Locale.forLanguageTag("zh-Hans")
+            LangMode.ZH_HANT -> Locale.forLanguageTag("zh-Hant")
+            LangMode.EN -> Locale.ENGLISH
+            else -> Locale.getDefault()
+        }
+        val geocoder = Geocoder(context, geocoderLocale)
         val addresses: List<Address> = geocoder.getFromLocation(lat, lng, 1) ?: emptyList()
         if (addresses.isNotEmpty()) {
             val a = addresses[0]
@@ -301,18 +320,7 @@ private fun isBgLight(c: Color): Boolean {
     return l > 0.5
 }
 
-/** 颜色叠加：在 base 之上以 alpha 覆盖 over，返回合成色（用于计算深色模式实际背景合成色）。 */
-private fun blendOver(base: Color, over: Color, alpha: Float): Color {
-    val a = alpha.coerceIn(0f, 1f)
-    return Color(
-        red = base.red * (1f - a) + over.red * a,
-        green = base.green * (1f - a) + over.green * a,
-        blue = base.blue * (1f - a) + over.blue * a,
-        alpha = 1f,
-    )
-}
-
-class PhotoViewerActivity : ComponentActivity() {
+class PhotoViewerActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -375,6 +383,8 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
     )
     val fgColor = remember(bgColor) { textColorForBg(bgColor.toArgb()) }
     val bgLight = remember(bgColor) { isBgLight(bgColor) }
+    // 是否走"深色表面"：系统深色模式，或照片莫奈取色很黑（此时页面文字已适配为白字）→ 背景/操控区都切深灰
+    val useDarkSurface = isDark || !bgLight
 
     // —— 编辑器状态（统一用 EditState 快照，便于撤销/重做）——
     var editing by remember { mutableStateOf(false) }
@@ -438,8 +448,10 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                 ) else EffectiveFilter()
                 // 编辑成品：颜色矩阵 + 暗角只作用于照片本身（processEditSquare 内部完成），
                 // 非 1:1 才底部补白成正方形，白底不被滤镜/暗角污染，与编辑器预览完全一致。
-                val processed = PhotoStorage.processEditSquare(raw, baseEff)
-                PhotoStorage.reencodeWithFrame(context, target, processed)
+                val processed = PhotoStorage.processEditSquare(raw, baseEff, AppPrefs.frame.value.color, isFrosted = AppPrefs.frame.value.isFrosted)
+                PhotoStorage.reencodeWithFrame(context, target, processed, AppPrefs.frame.value.color, isFrosted = AppPrefs.frame.value.isFrosted)
+                // 同步相框选择侧车，使下次编辑默认与本次成品一致
+                PhotoStorage.saveFrameMeta(target, AppPrefs.frame.value.isFrosted, AppPrefs.frame.value.color)
                 if (processed !== raw) processed.recycle()
                 // 更新"下次编辑基图"侧车：保存系统编辑返回的【原始图 raw】——不含补白/暗角/滤镜，
                 // 保留其真实比例。关键：补白只写进成品(target)，绝不写进 sourceSquare，
@@ -485,10 +497,10 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
     fun undo() { if (historyIndex > 0) { historyIndex--; editState = history[historyIndex] } }
     fun redo() { if (historyIndex < history.size - 1) { historyIndex++; editState = history[historyIndex] } }
 
-    // 底部按钮栏：进入时渐入、离场（返回/删除）时渐隐（仅 alpha，淡入即可，不上滑）
+    // 底部按钮栏：进入浏览/退出编辑时渐入、进入编辑时渐隐（仅 alpha）
     val bottomBarAlpha = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        bottomBarAlpha.animateTo(1f, tween(durationMillis = 320))
+    LaunchedEffect(editing) {
+        bottomBarAlpha.animateTo(if (editing) 0f else 1f, tween(durationMillis = 300))
     }
     /** 离场：底部按钮先渐隐，再执行 finish / 删除等退出动作。 */
     fun requestLeave(action: () -> Unit) {
@@ -507,6 +519,11 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                 workBitmap.value = base
                 // 编辑默认选中拍照时应用的滤镜：基图用无滤镜原图，叠加同一滤镜 → 与相册照片一致
                 val meta = PhotoStorage.loadFilterMeta(currentFile)
+                // 默认框 = 照片实际拍照时用的框：优先读侧车；无侧车(旧照片)从成品图底栏反推实际框，
+                // 避免回退到全局默认的毛玻璃而与照片实际框不符
+                val fm = PhotoStorage.loadFrameMeta(currentFile) ?: PhotoStorage.detectFrameMeta(currentFile)
+                val defaultFrosted = fm?.isFrosted ?: AppPrefs.frame.value.isFrosted
+                val defaultColor = fm?.frameColor ?: AppPrefs.frame.value.color
                 editState = if (meta != null) {
                     val tintStrengthEff = when (meta.tint) {
                         TintState.WARM -> meta.tintStrength
@@ -530,12 +547,15 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                         },
                         sat = 0.5f,
                         con = (meta.contrast / 2f + 0.5f).coerceIn(0f, 1f),
+                        frame = true,
+                        frameColor = defaultColor,
+                        isFrosted = defaultFrosted,
                     )
-                } else EditState()
+                } else EditState(frame = true, frameColor = defaultColor, isFrosted = defaultFrosted)
                 history = listOf(editState); historyIndex = 0
                 editing = true
             } else {
-                Toast.makeText(context, "无法编辑此照片", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.editor_cannot_edit), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -556,14 +576,14 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
             // 取无边框图（优先拍照原图侧车，否则裁掉白边），作为系统编辑器的编辑对象
             val inner = PhotoStorage.loadSourceSquare(currentFile) ?: PhotoStorage.cropInnerSquare(currentFile)
             if (inner == null) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "无法编辑此照片", Toast.LENGTH_SHORT).show() }
+                withContext(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.editor_cannot_edit), Toast.LENGTH_SHORT).show() }
                 return@launch
             }
             // 把无边框图插入系统相册作为临时可写回条目（编辑期间会短暂出现在系统相册，编辑结束即删除）
             val tempUri = PhotoStorage.saveBitmapToGallery(context, inner)
             inner.recycle()
             if (tempUri == null) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "无法编辑此照片", Toast.LENGTH_SHORT).show() }
+                withContext(Dispatchers.Main) { Toast.makeText(context, context.getString(R.string.editor_cannot_edit), Toast.LENGTH_SHORT).show() }
                 return@launch
             }
             // 原始带框图在系统相册里的条目（用于回写加框结果）；可能没有映射（旧照片/落盘失败）
@@ -611,8 +631,20 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
             // 非 1:1 时先烤暗角再底部留白成正方形（与系统编辑返回路径一致，构图不被破坏）；
             // 1:1 直接叠加滤镜后加拍立得白边。颜色矩阵 + 暗角只作用于照片本身，
             // 随后才底部补白，白底不被滤镜/暗角污染（与预览一致）。
-            val processed = PhotoStorage.processEditSquare(sq, eff)
-            PhotoStorage.reencodeWithFrame(context, currentFile, processed)
+            val frameColor = editState.frameColor
+            val bgColorForSquare = when {
+                !editState.frame -> AndroidColor.WHITE
+                editState.isFrosted -> 0
+                else -> frameColor
+            }
+            val processed = PhotoStorage.processEditSquare(sq, eff, bgColorForSquare, isFrosted = editState.isFrosted)
+            if (editState.frame) {
+                PhotoStorage.reencodeWithFrame(context, currentFile, processed, frameColor, isFrosted = editState.isFrosted)
+            } else {
+                PhotoStorage.reencodePlain(context, currentFile, processed)
+            }
+            // 同步相框选择侧车，使下次编辑默认与本次成品一致（修：编辑改了框后必须更新 meta，否则下次进入仍默认旧框）
+            PhotoStorage.saveFrameMeta(currentFile, editState.isFrosted, frameColor)
             // 更新下次编辑基图侧车：保存"无白边"的编辑结果（保留真实比例，白底只写进成品）
             PhotoStorage.saveSourceSquare(currentFile, sq)
             if (processed !== sq) processed.recycle()
@@ -661,9 +693,10 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
         }
 
         // 左右滑动切换照片（放大时禁用翻页，改为平移图片）
+        // 进入编辑时随顶/底栏一起淡出（bottomBarAlpha→0），退出编辑淡入
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().graphicsLayer { alpha = bottomBarAlpha.value },
             userScrollEnabled = !isZoomed,
         ) { page ->
             val f = photos.getOrNull(page) ?: startFile
@@ -686,21 +719,22 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                 .padding(start = 8.dp, top = 8.dp)
                 .size(44.dp)
                 .clip(CircleShape)
+                .graphicsLayer { alpha = bottomBarAlpha.value }
             .background(if (isDark) graySurface else (if (bgLight) RetroCream.copy(alpha = 0.85f) else Color(0x80000000)))
             .clickable(onClick = { requestLeave(onDismiss) }),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = if (isDark) whiteOnDark else fgColor)
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back), tint = if (isDark) whiteOnDark else fgColor)
         }
 
-        // 顶部时间 + 位置：深色模式统一白色文字
+        // 顶部时间 + 位置：深色模式统一白色文字；地址可换行且左右留出必要间距
         Column(
-            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp),
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp).fillMaxWidth().graphicsLayer { alpha = bottomBarAlpha.value },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(formatPhotoTime(currentFile.lastModified()), style = MaterialTheme.typography.labelSmall, color = if (isDark) whiteOnDark else fgColor, textAlign = TextAlign.Center)
+            Text(formatPhotoTime(currentFile.lastModified()), style = MaterialTheme.typography.labelSmall, color = if (isDark) whiteOnDark else fgColor, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(start = 56.dp, end = 24.dp))
             if (locationText != null) {
-                Text(locationText!!, style = MaterialTheme.typography.labelSmall, color = (if (isDark) whiteOnDark else fgColor).copy(alpha = 0.8f), textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
+                Text(locationText!!, style = MaterialTheme.typography.labelSmall, color = (if (isDark) whiteOnDark else fgColor).copy(alpha = 0.8f), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(start = 56.dp, end = 24.dp, top = 2.dp, bottom = 2.dp))
             }
         }
 
@@ -766,7 +800,7 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Icon(Icons.Filled.Share, contentDescription = "分享", modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
+                    Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.action_share), modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
                 }
 
                 Spacer(Modifier.width(2.dp))
@@ -782,7 +816,7 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Icon(Icons.Outlined.Edit, contentDescription = "系统编辑", modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
+                    Icon(Icons.Outlined.Edit, contentDescription = stringResource(R.string.cd_system_edit), modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
                 }
 
                 Spacer(Modifier.width(2.dp))
@@ -798,7 +832,7 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    Icon(Icons.Filled.Tune, contentDescription = "自写编辑", modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
+                    Icon(Icons.Filled.Tune, contentDescription = stringResource(R.string.cd_custom_edit), modifier = Modifier.size(22.dp), tint = if (isDark) whiteOnDark else fgColor)
                 }
 
                 Spacer(Modifier.width(16.dp))
@@ -812,7 +846,7 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                         .clickable { showDeleteConfirm = true },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.Delete, contentDescription = "删除", tint = if (isDark) whiteOnDark else RetroRust)
+                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.cd_delete), tint = if (isDark) whiteOnDark else RetroRust)
                 }
             }
         }
@@ -839,6 +873,7 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                 frameFile = currentFile,
                 bitmapState = workBitmap,
                 isDark = isDark,
+                darkSurface = useDarkSurface,
                 darkBase = darkBase,
                 bgColor = bgColor,
                 capsuleBg = capsuleBg,
@@ -852,8 +887,8 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("删除照片") },
-            text = { Text("确定要删除这张照片吗？") },
+            title = { Text(stringResource(R.string.viewer_delete_photo)) },
+            text = { Text(stringResource(R.string.viewer_delete_confirm)) },
             confirmButton = { TextButton(onClick = {
                 showDeleteConfirm = false
                 val idx = pagerState.currentPage
@@ -882,14 +917,14 @@ private fun PhotoViewerContent(startFile: File, startInEdit: Boolean = false, on
                         pagerState.scrollToPage(targetInNew)
                     }
                 }
-            }) { Text("删除") } },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") } },
+            }) { Text(stringResource(R.string.camera_delete)) } },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text(stringResource(R.string.dialog_cancel)) } },
         )
     }
 }
 
 /** 编辑器底部菜单两页。 */
-private enum class EditorTab { ADJUST, FILTER }
+private enum class EditorTab { ADJUST, FILTER, FRAME }
 
 /**
  * 编辑器完整状态快照：撤销/重做只需整体替换此对象。
@@ -908,6 +943,10 @@ private data class EditState(
     val exp: Float = 0.5f,
     val sat: Float = 0.5f,
     val con: Float = 0.5f,     // 对比度：0.5=中性
+    // 拍立得相框：强制开启（成品必须有拍立得边框，编辑器不提供关闭开关），仅可改色/毛玻璃
+    val frame: Boolean = true,
+    val frameColor: Int = 0xFFFFFFFF.toInt(),
+    val isFrosted: Boolean = false,
 )
 
 /**
@@ -963,6 +1002,7 @@ private fun PhotoEditorOverlay(
     frameFile: File,
     bitmapState: MutableState<Bitmap?>,
     isDark: Boolean,
+    darkSurface: Boolean,
     darkBase: Color,
     bgColor: Color,
     capsuleBg: Color,
@@ -974,12 +1014,14 @@ private fun PhotoEditorOverlay(
     val androidMatrix = buildFilterColorMatrix(eff)
     val composeCm = ColorMatrix(androidMatrix.getArray())
     val fg = if (isDark) whiteOnDark else fgColor
+    // 操控区（底部圆角卡片）底色：深色表面恒为深灰 RetroDarkSurface，浅色为奶油白 RetroCream。
+    // 触发深色表面的两种情形：①系统深色模式(isDark)；②照片莫奈取色很黑(darkSurface，此时页面文字已变白)。
+    // 不跟随照片主色 bgColor（否则与页面同色而"消失"）；统一走 this 深灰，不与照片动态色混。
+    val editorCardBg = if (darkSurface) RetroDarkSurface else RetroCream
     // 滤镜预览统一由下方照片 Image 层通过 colorMatrix 处理（裁切页已移除，不再需要给 CropImageView 单独设滤镜）
-    // 滤镜页左右遮罩应使用的背景色：深色模式须叠加两层遮罩后的实际合成色，否则遮罩与页面背景有色差
-    val maskColor = if (isDark) {
-        val c1 = blendOver(darkBase, bgColor, 0.4f)
-        blendOver(c1, Color(0xFF1A1A1A), 0.6f)
-    } else bgColor
+    // 滤镜页左右遮罩颜色：滤镜面板位于底部圆角卡片内，须与卡片底色一致（RetroDarkSurface/RetroCream）
+    // ——底部面板背景与 maskColor 必须联动，改卡片底色时要同步改这里
+    val maskColor = editorCardBg
     val sliderColors = SliderDefaults.colors(
         thumbColor = if (isDark) Color.White else RetroRust,
         activeTrackColor = if (isDark) Color(0xFFCFCFCF) else RetroRust,
@@ -998,12 +1040,15 @@ private fun PhotoEditorOverlay(
     val framedAlpha = remember { Animatable(0f) }
     val photoAlpha = remember { Animatable(0f) }
     val cropAlpha = remember { Animatable(0f) }
-    val contentAlpha = remember { Animatable(1f) }       // 整个编辑层退出时整体渐出（需求⑦）
+    val contentAlpha = remember { Animatable(0f) }       // 整个编辑层：进入时渐入（与详情页照片淡出交叉）、退出时整体渐出（需求⑦）
     // 删去 CROP 页后仅 ADJUST / FILTER 两页，照片层始终挂载；不再有裁切页交叉淡出
     val cropPageAlpha = 0f
     val photoPageAlpha = 1f
     // 滤镜页整体预览元素略微缩小（宽度更窄），与切页动画同步过渡
     val previewScale by animateFloatAsState(if (state.tab == EditorTab.FILTER) 0.88f else 1f, tween(350), label = "previewScale")
+    // 拍立得相框：仅在「相框」栏显示预览（调节/滤镜栏不显示相框），切到相框栏时边框渐入
+    val showFrame = state.frame && state.tab == EditorTab.FRAME
+    val frameAlpha by animateFloatAsState(if (showFrame) 1f else 0f, tween(220), label = "frameAlpha")
     // 滤镜切换的模糊过渡改为按离中心距离逐页应用（见 EditorFilterPanel），此处不再做整页模糊
     // 顶栏 / 底栏 进入、离场动画（Animatable）
     val topAlpha = remember { Animatable(0f) }
@@ -1019,6 +1064,7 @@ private fun PhotoEditorOverlay(
     // 进入动画：待带框原图加载完成后才启动（避免异步加载导致的"闪一下"，需求①）
     LaunchedEffect(framedReady) {
         if (!framedReady) return@LaunchedEffect
+        launch { contentAlpha.animateTo(1f, tween(durationMillis = 300)) }   // 编辑层整体渐入（与详情页照片淡出交叉）
         launch { framedAlpha.animateTo(0f, tween(durationMillis = 260)) }
         launch { delay(140); photoAlpha.animateTo(1f, tween(durationMillis = 240)) }
         launch {
@@ -1055,11 +1101,6 @@ private fun PhotoEditorOverlay(
 
     Box(Modifier.fillMaxSize().background(if (isDark) darkBase else bgColor).graphicsLayer { alpha = contentAlpha.value }
         .pointerInput(Unit) { }) {
-        // 与照片详情页背景保持一致：深色模式先叠取色淡显 + 半透明灰遮罩
-        if (isDark) {
-            Box(Modifier.fillMaxSize().background(bgColor.copy(alpha = 0.4f)))
-            Box(Modifier.fillMaxSize().background(Color(0xFF1A1A1A).copy(alpha = 0.6f)))
-        }
 
         // 进入时"带白框原图"：与相册详情页 ZoomablePhoto 完全一致的尺寸/定位（同一文件、Fit、相同内边距），
         // 作为背景层在顶/底控件之下，与无边框预览做交叉淡入（带框先渐出 → 无边框方图渐入）。
@@ -1083,22 +1124,22 @@ private fun PhotoEditorOverlay(
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).background(capsuleBg)
                         .clickable(onClick = { handleBack() }), contentAlignment = Alignment.Center,
-                ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = if (isDark) whiteOnDark else fgColor) }
+                ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back), tint = if (isDark) whiteOnDark else fgColor) }
                 // 右侧：撤销 / 重做 / 保存
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         Modifier.size(40.dp)
                             .clickable(enabled = canUndo) { onUndo() }, contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "撤销", tint = if (canUndo) fg else fg.copy(alpha = 0.35f)) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = stringResource(R.string.cd_undo), tint = if (canUndo) fg else fg.copy(alpha = 0.35f)) }
                     Box(
                         Modifier.size(40.dp)
                             .clickable(enabled = canRedo) { onRedo() }, contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "重做", tint = if (canRedo) fg else fg.copy(alpha = 0.35f)) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = stringResource(R.string.cd_redo), tint = if (canRedo) fg else fg.copy(alpha = 0.35f)) }
                     // 保存：铁锈红圆形 + 勾
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).background(RetroRust)
                             .clickable(onClick = { requestExit { onSave() } }), contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Filled.Check, contentDescription = "保存", tint = Color.White) }
+                    ) { Icon(Icons.Filled.Check, contentDescription = stringResource(R.string.cd_save), tint = Color.White) }
                 }
             }
 
@@ -1117,64 +1158,144 @@ private fun PhotoEditorOverlay(
                         val bmp = bitmapState.value ?: return@LaunchedEffect
                         liveBitmap.value = bmp
                     }
-                    // 照片预览层：直接显示编辑基图（外部编辑结果或上一次编辑结果），叠加滤镜预览
-                    Image(
-                        bitmap = liveBitmap.value.asImageBitmap(), contentDescription = "编辑预览", contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize().graphicsLayer {
-                            alpha = photoAlpha.value
-                            colorFilter = ColorFilter.colorMatrix(composeCm)
-                        },
-                    )
-                    // 暗角预览：所有页（含 CROP）统一叠加同一径向暗角层，半径=半对角线、stops 与落盘 applyFilterToBitmap
-                    // 完全一致，确保裁切/调节/滤镜三页所见一致、且与成片一致（修复"裁切时暗角不生效"）。
-                    // 白框置顶：白框在暗角层【之上】重绘（见下方 CROP 专属 Box），故暗角不会压暗白框。
-                    if (state.vig) {
-                        val vigAlpha = (state.vigInt * 0xD9 / 0xFF).coerceIn(0f, 1f)   // = vigInt * 217/255 ≈ vigInt*0.85，与保存端一致
-                        val bmp = liveBitmap.value
-                        Box(
-                            Modifier.fillMaxSize()
-                                .graphicsLayer { alpha = photoAlpha.value }
-                                .drawBehind {
-                                    // 暗角必须按照片「实际比例」计算并裁剪到照片实际显示矩形，而非 1:1 方框：
-                                    // 1) 计算 ContentScale.Fit 下照片在方框里的实际显示矩形 (dispX, dispY, dispW, dispH)；
-                                    // 2) 半径取该显示矩形的半对角线 → 暗角 100% 落在照片真实四角（与落盘 bakeVignette 一致）；
-                                    // 3) clipRect 把绘制限定在显示矩形内 → 暗角不再污染 letterbox（上下/左右空白区），
-                                    //    否则 fillMaxSize 暗角会 CLAMP 到方框四角，让非 1:1 照片看起来"按 1:1 来的"。
-                                    val pw = bmp.width.toFloat()
-                                    val ph = bmp.height.toFloat()
-                                    val scale = kotlin.math.min(size.width / pw, size.height / ph)
-                                    val dispW = pw * scale
-                                    val dispH = ph * scale
-                                    val dispX = (size.width - dispW) / 2f
-                                    val dispY = (size.height - dispH) / 2f
-                                    val vigRadius = kotlin.math.hypot(dispW / 2f, dispH / 2f)
-                                    clipRect(
-                                        left = dispX, top = dispY,
-                                        right = dispX + dispW, bottom = dispY + dispH,
-                                    ) {
-                                        drawRect(
-                                            Brush.radialGradient(
-                                                colorStops = arrayOf(
-                                                    0f to Color.Transparent,
-                                                    0.4f to Color.Transparent,
-                                                    1f to Color.Black.copy(alpha = vigAlpha),
-                                                ),
-                                                center = center,   // 方框中心 = 照片中心（Fit 居中）
-                                                radius = vigRadius,
-                                            ),
-                                        )
-                                    }
-                                },
+
+                    if (showFrame) {
+                        // 拍立得相框：竖版卡片居中（frameColor 底），照片按真实比例嵌入、滤镜仅作用于照片。
+                        // 卡片比例：边框 b=0.06*s、底部额外留白 6b → 宽=s+2b、高=s+7b → 比例 (1+0.12)/(1+0.42)。
+                        // 与落盘 reencodeWithFrame 几何一致，做到预览即成品（边框跟随照片）。
+                        BoxWithConstraints(
+                            Modifier.fillMaxSize().graphicsLayer { alpha = frameAlpha },
+                        ) {
+                            val side = maxOf(maxWidth, maxHeight)   // 本层为正方形区域，maxWidth==maxHeight
+                            val cardAspect = (1f + 0.12f) / (1f + 0.42f)
+                            val cardW = side * cardAspect
+                            val cardH = side
+                            // 照片内嵌内边距：顶/左/右 = b/卡片高，底部 = 6b/卡片高（占卡片高比例）
+                            val inset = side * (0.06f / 1.42f)
+                            val bottomInset = side * (0.36f / 1.42f)
+                            val photoBmp = liveBitmap.value
+                            // 毛玻璃背景：直接调用与落盘完全相同的算法（高清缩放：输出的约 1/5 再放大，保留照片内容的磨砂感）预生成位图。
+                            // 不再用 graphicsLayer renderEffect（API 31 以下是 no-op → "预览模糊没生效"bug），
+                            // 且观感与拍照、保存成品完全一致（同一函数、同一缩放比例不变量）。
+                            val frostedBg = remember(photoBmp, state.isFrosted) {
+                                if (state.isFrosted) PhotoStorage.frostedBackground(photoBmp, 512, (512f * 1.42f / 1.12f).roundToInt())
+                                else null
+                            }
+                            Box(
+                                Modifier.align(Alignment.Center).width(cardW).height(cardH)
+                                    .clipToBounds()
+                                    .background(if (state.isFrosted) Color.Transparent else Color(state.frameColor)),
+                            ) {
+                                // 毛玻璃背景（仅选中毛玻璃时；无压暗遮罩）；滤镜同样作用于背景（落盘用的是已滤镜照片生成背景）
+                                if (state.isFrosted && frostedBg != null) {
+                                    Image(
+                                        bitmap = frostedBg.asImageBitmap(), contentDescription = null, contentScale = ContentScale.FillBounds,
+                                        modifier = Modifier.matchParentSize().graphicsLayer {
+                                            colorFilter = ColorFilter.colorMatrix(composeCm)
+                                        },
+                                    )
+                                }
+                                // 照片层：在卡片内按内边距嵌入（该区域恰好为正方形，Fit 满铺），滤镜只作用于照片、不染框
+                                Image(
+                                    bitmap = photoBmp.asImageBitmap(), contentDescription = stringResource(R.string.cd_edit_preview), contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize()
+                                        .padding(top = inset, bottom = bottomInset, start = inset, end = inset)
+                                        .graphicsLayer {
+                                            alpha = photoAlpha.value
+                                            colorFilter = ColorFilter.colorMatrix(composeCm)
+                                        },
+                                )
+                                // 暗角预览：裁剪到照片内嵌区域（与落盘一致），不污染相框
+                                if (state.vig) {
+                                    val vigAlpha = (state.vigInt * 0xD9 / 0xFF).coerceIn(0f, 1f)
+                                    Box(
+                                        Modifier.fillMaxSize()
+                                            .padding(top = inset, bottom = bottomInset, start = inset, end = inset)
+                                            .graphicsLayer { alpha = photoAlpha.value }
+                                            .drawBehind {
+                                                val dispW = size.width
+                                                val dispH = size.height
+                                                val vigRadius = kotlin.math.hypot(dispW / 2f, dispH / 2f)
+                                                clipRect(left = 0f, top = 0f, right = dispW, bottom = dispH) {
+                                                    drawRect(
+                                                        Brush.radialGradient(
+                                                            colorStops = arrayOf(
+                                                                0f to Color.Transparent,
+                                                                0.4f to Color.Transparent,
+                                                                1f to Color.Black.copy(alpha = vigAlpha),
+                                                            ),
+                                                            center = center,
+                                                            radius = vigRadius,
+                                                        ),
+                                                    )
+                                                }
+                                            },
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        // 无框：照片直接满铺（与原行为一致）
+                        Image(
+                            bitmap = liveBitmap.value.asImageBitmap(), contentDescription = stringResource(R.string.cd_edit_preview), contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize().graphicsLayer {
+                                alpha = photoAlpha.value
+                                colorFilter = ColorFilter.colorMatrix(composeCm)
+                            },
                         )
+                        if (state.vig) {
+                            val vigAlpha = (state.vigInt * 0xD9 / 0xFF).coerceIn(0f, 1f)   // = vigInt * 217/255 ≈ vigInt*0.85，与保存端一致
+                            val bmp = liveBitmap.value
+                            Box(
+                                Modifier.fillMaxSize()
+                                    .graphicsLayer { alpha = photoAlpha.value }
+                                    .drawBehind {
+                                        // 暗角必须按照片「实际比例」计算并裁剪到照片实际显示矩形，而非 1:1 方框：
+                                        val pw = bmp.width.toFloat()
+                                        val ph = bmp.height.toFloat()
+                                        val scale = kotlin.math.min(size.width / pw, size.height / ph)
+                                        val dispW = pw * scale
+                                        val dispH = ph * scale
+                                        val dispX = (size.width - dispW) / 2f
+                                        val dispY = (size.height - dispH) / 2f
+                                        val vigRadius = kotlin.math.hypot(dispW / 2f, dispH / 2f)
+                                        clipRect(
+                                            left = dispX, top = dispY,
+                                            right = dispX + dispW, bottom = dispY + dispH,
+                                        ) {
+                                            drawRect(
+                                                Brush.radialGradient(
+                                                    colorStops = arrayOf(
+                                                        0f to Color.Transparent,
+                                                        0.4f to Color.Transparent,
+                                                        1f to Color.Black.copy(alpha = vigAlpha),
+                                                    ),
+                                                    center = center,
+                                                    radius = vigRadius,
+                                                ),
+                                            )
+                                        }
+                                    },
+                            )
+                        }
                     }
                 }
 
             }
 
-            // 底部面板：上半参数 + 下半菜单（上半参数高度随页切换经 animateContentSize 平滑变化，使上方照片随之平滑移动）
+            // 底部面板：上半参数 + 下半菜单。悬浮圆角矩形卡片（四角圆角，与屏幕左右/底部留距离），
+            // 高度随栏目（ADJUST/FILTER/FRAME）切换经 AnimatedContent 自动变化
             Column(
-                Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)
-                    .graphicsLayer { alpha = bottomAlpha.value; translationY = bottomOffset.value },
+                Modifier.fillMaxWidth()
+                    .graphicsLayer { alpha = bottomAlpha.value; translationY = bottomOffset.value }
+                    .navigationBarsPadding()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                    // 操控区背景：深色表面(系统深色 或 莫奈取色很黑)→深灰、浅色→奶油白，不跟随照片主色。
+                    // 深色表面额外加 elevation 阴影：页面深色底(0xFF242424)与深灰表面(0xFF2E2E2E)仅差 4%，
+                    // 不加点阴影会被"吸"进页面、看起来像没背景；阴影让深灰卡片清晰独立。
+                    .then(if (darkSurface) Modifier.shadow(12.dp, RoundedCornerShape(28.dp), ambientColor = Color.Black, spotColor = Color.Black) else Modifier)
+                    .background(editorCardBg, RoundedCornerShape(28.dp))
+                    .padding(bottom = 6.dp),
             ) {
                 // 上半部分：对应当前页的参数。用 AnimatedContent + SizeTransform 让面板高度平滑过渡，
                 // 上方照片（weight(1f)）随之平滑移动，避免切页时照片位置硬跳（需求③）
@@ -1186,24 +1307,26 @@ private fun PhotoEditorOverlay(
                 ) { tab ->
                     when (tab) {
                         EditorTab.ADJUST -> {
-                            Column(Modifier.fillMaxWidth()) {
+                            Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                                // 本栏（第一栏）所有滑块标签共享一个最小字号，保证整列标签大小一致
+                                val grp = rememberColumnMinFontSize()
                                 // 黑白：与拍照前「黑白」滤镜一一对应（0~1，0=关闭）；预览与落盘共用 grayscale
-                                EditorSlider("黑白", state.grayscale, { onStateChange(state.copy(grayscale = it)) }, sliderColors, fg, onCommit,
-                                    onReset = { onStateChange(state.copy(grayscale = 0f)); onCommit() }, resetBg = capsuleBg)
+                                EditorSlider(stringResource(R.string.editor_slider_grayscale), state.grayscale, { onStateChange(state.copy(grayscale = it)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(grayscale = 0f)); onCommit() }, resetBg = capsuleBg, group = grp)
                                 Spacer(Modifier.height(10.dp))
                                 // 亮度：与拍照前「亮度」滤镜一一对应（曝光通道，0.5=中性）
-                                EditorSlider("亮度", state.exp, { onStateChange(state.copy(exp = it)) }, sliderColors, fg, onCommit,
-                                    onReset = { onStateChange(state.copy(exp = 0.5f)); onCommit() }, resetBg = capsuleBg)
+                                EditorSlider(stringResource(R.string.editor_slider_brightness), state.exp, { onStateChange(state.copy(exp = it)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(exp = 0.5f)); onCommit() }, resetBg = capsuleBg, group = grp)
                                 Spacer(Modifier.height(10.dp))
-                                EditorSlider("对比度", state.con, { onStateChange(state.copy(con = it)) }, sliderColors, fg, onCommit,
-                                    onReset = { onStateChange(state.copy(con = 0.5f)); onCommit() }, resetBg = capsuleBg)
+                                EditorSlider(stringResource(R.string.editor_slider_contrast), state.con, { onStateChange(state.copy(con = it)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(con = 0.5f)); onCommit() }, resetBg = capsuleBg, group = grp)
                                 Spacer(Modifier.height(10.dp))
-                                EditorSlider("饱和度", state.sat, { onStateChange(state.copy(sat = it)) }, sliderColors, fg, onCommit,
-                                    onReset = { onStateChange(state.copy(sat = 0.5f)); onCommit() }, resetBg = capsuleBg)
+                                EditorSlider(stringResource(R.string.editor_slider_saturation), state.sat, { onStateChange(state.copy(sat = it)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(sat = 0.5f)); onCommit() }, resetBg = capsuleBg, group = grp)
                                 Spacer(Modifier.height(10.dp))
                                 // 暗角：滑块 >0 自动开启 vig，=0 关闭；预览与落盘共用 vigInt（0~1 强度）
-                                EditorSlider("暗角", state.vigInt, { onStateChange(state.copy(vigInt = it, vig = it > 0.001f)) }, sliderColors, fg, onCommit,
-                                    onReset = { onStateChange(state.copy(vigInt = 0f, vig = false)); onCommit() }, resetBg = capsuleBg)
+                                EditorSlider(stringResource(R.string.editor_slider_vignette), state.vigInt, { onStateChange(state.copy(vigInt = it, vig = it > 0.001f)) }, sliderColors, fg, onCommit,
+                                    onReset = { onStateChange(state.copy(vigInt = 0f, vig = false)); onCommit() }, resetBg = capsuleBg, group = grp)
                             }
                         }
                         EditorTab.FILTER -> {
@@ -1216,24 +1339,34 @@ private fun PhotoEditorOverlay(
                                 maskColor = maskColor,
                             )
                         }
-                        else -> {}
+                        EditorTab.FRAME -> {
+                            EditorFramePanel(
+                                state = state,
+                                onStateChange = onStateChange,
+                                onCommit = onCommit,
+                                isDark = isDark,
+                                fg = fg,
+                            )
+                        }
                     }
                 }
-                // 下半部分：菜单栏（裁切 / 滤镜），左对齐；背景色落在"选中按钮"上（非整条栏），故栏本身透明无底色
+                // 下半部分：菜单栏（调节 / 滤镜 / 相框），图标按钮、左对齐；
+                // 卡片自带底色，按钮背景只落在"选中项"（铁锈红），未选中透明
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.Start, verticalAlignment = Alignment.CenterVertically,
                 ) {
                     EditorTab.values().forEach { t ->
-                        val label = when (t) { EditorTab.ADJUST -> "调节"; EditorTab.FILTER -> "滤镜" }
+                        val label = when (t) { EditorTab.ADJUST -> stringResource(R.string.editor_tab_adjust); EditorTab.FILTER -> stringResource(R.string.editor_tab_filter); EditorTab.FRAME -> stringResource(R.string.editor_tab_frame) }
+                        val icon = when (t) { EditorTab.ADJUST -> Icons.Filled.Tune; EditorTab.FILTER -> Icons.Filled.PhotoFilter; EditorTab.FRAME -> Icons.Filled.CropPortrait }
                         val selected = state.tab == t
                         Box(
                             Modifier.padding(horizontal = 6.dp).clip(RoundedCornerShape(18.dp))
                                 .background(if (selected) RetroRust else Color.Transparent)
-                                .clickable { onStateChange(state.copy(tab = t)); onCommit() }
+                                .clickable { onStateChange(state.copy(tab = t)) }
                                 .padding(horizontal = 22.dp, vertical = 9.dp),
                             contentAlignment = Alignment.Center,
-                        ) { Text(label, color = if (selected) Color.White else fg, fontSize = 14.sp) }
+                        ) { Icon(icon, contentDescription = label, tint = if (selected) Color.White else fg, modifier = Modifier.size(20.dp)) }
                     }
                 }
             }
@@ -1243,30 +1376,49 @@ private fun PhotoEditorOverlay(
     // 返回确认丢弃修改（可一并还原为裁切前的原图，需求②）
     if (showDiscard) {
         val canRestore = origBackupOf(frameFile).exists()
+        // 弹窗底部按钮共享一个最小字号：整行按钮文字大小一致
+        val discardBtnMin = rememberColumnMinFontSize()
         AlertDialog(
             onDismissRequest = { showDiscard = false },
-            title = { Text("放弃修改") },
-            text = { Text(if (canRestore) "当前编辑尚未保存。可放弃修改，或一并还原为裁切前的原图。" else "当前编辑尚未保存，确定放弃这些修改吗？") },
-            confirmButton = { TextButton(onClick = { showDiscard = false; requestExit(onCancel) }) { Text("放弃") } },
+            title = { Text(stringResource(R.string.editor_discard_title)) },
+            text = { Text(if (canRestore) stringResource(R.string.editor_discard_text_can_restore) else stringResource(R.string.editor_discard_text)) },
+            confirmButton = { TextButton(onClick = { showDiscard = false; requestExit(onCancel) }) { AutoSizeText(stringResource(R.string.editor_discard), maxFontSize = 14.sp, group = discardBtnMin) } },
             dismissButton = {
                 Row {
                     if (canRestore) {
-                        TextButton(onClick = { showDiscard = false; requestExit(onRestoreOriginal) }) { Text("还原原图") }
+                        TextButton(onClick = { showDiscard = false; requestExit(onRestoreOriginal) }) { AutoSizeText(stringResource(R.string.editor_restore_original), maxFontSize = 14.sp, group = discardBtnMin) }
                     }
-                    TextButton(onClick = { showDiscard = false }) { Text("继续编辑") }
+                    TextButton(onClick = { showDiscard = false }) { AutoSizeText(stringResource(R.string.editor_continue_edit), maxFontSize = 14.sp, group = discardBtnMin) }
                 }
             },
         )
     }
 }
 
+/** 拍立得相框颜色预设（复古胶片风，不透明）。与设置页一致。 */
+private val FRAME_SOLID_COLORS = listOf(
+    0xFFFFFFFF.toInt(), // 白
+    0xFFEDE0C8.toInt(), // 奶油
+    0xFFF2E2B8.toInt(), // 米黄
+    0xFFD8C3A5.toInt(), // 沙色
+    0xFF8A5A3B.toInt(), // 复古棕
+    0xFF4B3621.toInt(), // 莫卡
+    0xFF1A1A1A.toInt(), // 墨黑
+    0xFF2C3E50.toInt(), // 深蓝
+)
+
+/** 毛玻璃选择指示的圆点笔刷：中心白色光斑径向渐变至透明，配合 blur 模拟毛玻璃质感。 */
+private val frostedDotBrush = Brush.radialGradient(
+    listOf(Color(0xE6FFFFFF), Color(0x00FFFFFF)),
+)
+
 /** 滤镜轮播预设：每个预设对应一组编辑状态（暖/冷/原图），底部滑块控制其强度。黑白已移至「调节」栏。 */
 private enum class FilterId { ORIGIN, WARM, COOL }
-private data class FilterPreset(val id: FilterId, val name: String, val warm: Boolean, val cool: Boolean, val hasSlider: Boolean)
+private data class FilterPreset(val id: FilterId, val nameRes: Int, val warm: Boolean, val cool: Boolean, val hasSlider: Boolean)
 private val FILTER_PRESETS = listOf(
-    FilterPreset(FilterId.ORIGIN, "原图", false, false, false),
-    FilterPreset(FilterId.WARM, "暖色", true, false, true),
-    FilterPreset(FilterId.COOL, "冷色", false, true, true),
+    FilterPreset(FilterId.ORIGIN, R.string.filter_origin, false, false, false),
+    FilterPreset(FilterId.WARM, R.string.filter_warm, true, false, true),
+    FilterPreset(FilterId.COOL, R.string.filter_cool, false, true, true),
 )
 private fun currentFilterIndex(state: EditState): Int = when {
     state.tint == TintState.WARM -> FILTER_PRESETS.indexOfFirst { it.id == FilterId.WARM }
@@ -1372,7 +1524,7 @@ private fun EditorFilterPanel(
                                 )
                             },
                             valueRange = 0f..1f,
-                            modifier = Modifier.width(squareSize),
+                            modifier = Modifier.width(squareSize).height(36.dp),
                             colors = SliderDefaults.colors(
                                 thumbColor = if (isDark) Color.White else RetroRust,
                                 activeTrackColor = if (isDark) Color(0xFFCFCFCF) else RetroRust,
@@ -1401,12 +1553,109 @@ private fun EditorFilterPanel(
                 })
             }
             // 滤镜名（底部居中，不随横滑移动；整块含此区域都可滑动切换）
-            Text(
-                FILTER_PRESETS[pagerState.currentPage].name,
-                color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp),
+            AutoSizeText(
+                stringResource(FILTER_PRESETS[pagerState.currentPage].nameRes),
+                color = fg, maxFontSize = 13.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 4.dp),
+                textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+/**
+ * 相框页：拍立得边框【强制开启】（成品必须有相框，不提供关闭开关），
+ * 提供预设色板 + HSV 自定义取色。颜色变更会写回 EditState.frameColor，与落盘一致。
+ * 毛玻璃选中时：HSV 色线（色相/饱和度/明度）灰化且不可拖动（毛玻璃背景与自定义颜色互斥）。
+ */
+@Composable
+private fun EditorFramePanel(
+    state: EditState,
+    onStateChange: (EditState) -> Unit,
+    onCommit: () -> Unit,
+    isDark: Boolean,
+    fg: Color,
+) {
+    // 由当前 frameColor 推导 HSV（每次重组重算，保持与预设点击同步）
+    val hsv = remember { FloatArray(3) }
+    remember(state.frameColor) { AndroidColor.colorToHSV(state.frameColor, hsv) }
+    // 毛玻璃模式下 HSV 色线禁用：轨道/滑钮/文字统一灰化
+    val hsvEnabled = !state.isFrosted
+    val frameSlider = SliderDefaults.colors(
+        thumbColor = if (isDark) Color.White else RetroRust,
+        activeTrackColor = if (isDark) Color(0xFFCFCFCF) else RetroRust,
+        inactiveTrackColor = if (isDark) Color(0xFF3A3A3A) else Color(0xFF5A5147),
+        disabledThumbColor = if (isDark) Color(0xFF6E6E6E) else Color(0xFFB0A79A),
+        disabledActiveTrackColor = if (isDark) Color(0xFF555555) else Color(0xFFC4BBAD),
+        disabledInactiveTrackColor = if (isDark) Color(0xFF2E2E2E) else Color(0xFFD8D0C4),
+    )
+    val hsvLabelColor = if (hsvEnabled) fg else fg.copy(alpha = 0.35f)
+    // 本栏（最后一栏）所有标签共享一个最小字号，保证整列标签大小一致
+    val grp = rememberColumnMinFontSize()
+    Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+        // 颜色（相框恒开启）
+        AutoSizeText(stringResource(R.string.editor_frame_color), maxFontSize = 14.sp, color = fg, group = grp)
+        Spacer(Modifier.height(8.dp))
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(5),
+            modifier = Modifier.height(104.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            userScrollEnabled = false,
+        ) {
+            items(FRAME_SOLID_COLORS.size) { i ->
+                val c = FRAME_SOLID_COLORS[i]
+                val selected = !state.isFrosted && state.frameColor == c
+                Box(
+                    Modifier.size(40.dp).clip(CircleShape)
+                        .background(Color(c))
+                        .border(
+                            if (selected) 3.dp else 1.dp,
+                            if (selected) (if (isDark) RetroCream else RetroRust) else fg.copy(alpha = 0.4f),
+                            CircleShape,
+                        )
+                        .clickable {
+                            onStateChange(state.copy(frameColor = c, isFrosted = false)); onCommit()
+                        },
+                )
+            }
+            // 毛玻璃：50% 圆角胶囊，背景 = 素色底 + 中心"模糊圆点"（径向渐变白色光斑 + blur），模拟毛玻璃质感
+            item(span = { GridItemSpan(2) }) {
+                val selected = state.isFrosted
+                Box(
+                    Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(50))
+                        .background(if (isDark) Color(0xFF3A3A3A) else Color(0xFFE7DFD1))
+                        .border(
+                            if (selected) 3.dp else 1.dp,
+                            if (selected) (if (isDark) RetroCream else RetroRust) else fg.copy(alpha = 0.4f),
+                            RoundedCornerShape(50),
+                        )
+                        .clickable { onStateChange(state.copy(frame = true, isFrosted = true)); onCommit() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // 模糊圆点（API<31 时 blur 为 no-op，径向渐变本身已是柔化光斑，观感仍成立）
+                    Box(Modifier.size(72.dp).blur(16.dp).background(frostedDotBrush, CircleShape))
+                    AutoSizeText(stringResource(R.string.frame_frosted), modifier = Modifier.fillMaxWidth(), maxFontSize = 13.sp, color = fg, fontWeight = FontWeight.Medium, textAlign = TextAlign.Center, group = grp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        // HSV 色线：与「调节」栏同款布局（左文字 + 右滑块，EditorSlider）；
+        // 毛玻璃选中时灰化禁用（enabled=false），避免拖动把选择切回纯色
+        EditorSlider(stringResource(R.string.frame_hue), hsv[0] / 360f, {
+            hsv[0] = it * 360f
+            onStateChange(state.copy(frameColor = AndroidColor.HSVToColor(hsv), isFrosted = false))
+        }, frameSlider, hsvLabelColor, onCommit, enabled = hsvEnabled, group = grp)
+        Spacer(Modifier.height(10.dp))
+        EditorSlider(stringResource(R.string.frame_saturation), hsv[1], {
+            hsv[1] = it
+            onStateChange(state.copy(frameColor = AndroidColor.HSVToColor(hsv), isFrosted = false))
+        }, frameSlider, hsvLabelColor, onCommit, enabled = hsvEnabled, group = grp)
+        Spacer(Modifier.height(10.dp))
+        EditorSlider(stringResource(R.string.frame_value), hsv[2], {
+            hsv[2] = it
+            onStateChange(state.copy(frameColor = AndroidColor.HSVToColor(hsv), isFrosted = false))
+        }, frameSlider, hsvLabelColor, onCommit, enabled = hsvEnabled, group = grp)
     }
 }
 
@@ -1448,19 +1697,20 @@ private fun rotateCover(src: Bitmap, deg: Float): Bitmap {
     return out
 }
 
-/** 调节页的单行滑块：标签 + 滑条；松手时回调查 checkpoint（避免拖动过程产生大量历史点）。 */
+/** 调节页的单行滑块：标签 + 滑条（高度压缩至 36dp，比默认 48dp 更紧凑）；松手时回调查 checkpoint（避免拖动过程产生大量历史点）。 */
 @Composable
-private fun EditorSlider(label: String, value: Float, onValueChange: (Float) -> Unit, colors: SliderColors, labelColor: Color, onChangeFinished: () -> Unit = {}, onReset: (() -> Unit)? = null, resetBg: Color = Color.Transparent) {
+private fun EditorSlider(label: String, value: Float, onValueChange: (Float) -> Unit, colors: SliderColors, labelColor: Color, onChangeFinished: () -> Unit = {}, onReset: (() -> Unit)? = null, resetBg: Color = Color.Transparent, enabled: Boolean = true, group: com.genkaim.picocam.ui.ColumnMinFontSize? = null) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = labelColor, fontSize = 14.sp, modifier = Modifier.width(64.dp))
-        Slider(value = value, onValueChange = onValueChange, valueRange = 0f..1f, modifier = Modifier.weight(1f), colors = colors, onValueChangeFinished = onChangeFinished)
+        // 标签列固定 72dp，右侧留 8dp 间距，避免分组统一字号后文字紧贴滑块
+        AutoSizeText(label, modifier = Modifier.width(72.dp).padding(end = 8.dp), maxFontSize = 14.sp, color = labelColor, group = group)
+        Slider(value = value, onValueChange = onValueChange, valueRange = 0f..1f, modifier = Modifier.weight(1f).height(36.dp), colors = colors, onValueChangeFinished = onChangeFinished, enabled = enabled)
         if (onReset != null) {
             Spacer(Modifier.width(8.dp))
             Box(
                 Modifier.size(30.dp).clip(CircleShape).background(resetBg)
                     .clickable { onReset() },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Filled.Refresh, contentDescription = "复原", tint = labelColor) }
+            ) { Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.cd_restore), tint = labelColor) }
         }
     }
 }
@@ -1474,7 +1724,7 @@ private fun EditPill(text: String, selected: Boolean, isDark: Boolean, onClick: 
         Modifier.clip(RoundedCornerShape(16.dp)).background(bg).clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(text, style = MaterialTheme.typography.labelMedium, color = fg) }
+    ) { AutoSizeText(text, modifier = Modifier.fillMaxWidth(), maxFontSize = 13.sp, color = fg, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center) }
 }
 
 /** 底部缩略图：按照片真实比例（非正方形）显示；选中态描边随深浅色（深色=灰、浅色=深棕）。 */
@@ -1546,7 +1796,7 @@ private fun ZoomablePhoto(file: File, modifier: Modifier = Modifier, cacheKey: S
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current).data(file).crossfade(true)
             .memoryCacheKey(cacheKey ?: file.absolutePath).build(),
-        contentDescription = "查看照片",
+        contentDescription = stringResource(R.string.cd_view_photo),
         contentScale = ContentScale.Fit,
         modifier = modifier
             .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offsetX, translationY = offsetY, rotationZ = rotation)
@@ -1593,11 +1843,11 @@ private suspend fun shareImage(context: Context, file: File) {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        val chooser = Intent.createChooser(sendIntent, "分享照片").apply {
+        val chooser = Intent.createChooser(sendIntent, context.getString(R.string.camera_share_single)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(chooser)
     } catch (e: Exception) {
-        Toast.makeText(context, "分享失败：${e.localizedMessage ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.toast_share_failed, e.localizedMessage ?: context.getString(R.string.unknown_error)), Toast.LENGTH_SHORT).show()
     }
 }

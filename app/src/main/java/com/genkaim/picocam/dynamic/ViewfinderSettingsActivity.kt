@@ -2,7 +2,8 @@ package com.genkaim.picocam.dynamic
 
 import android.content.res.Configuration
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import com.genkaim.picocam.BaseActivity
+import com.genkaim.picocam.R
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -37,6 +38,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowInsetsCompat
@@ -66,7 +68,7 @@ private const val MIN_INNER_CORNER_DP = 8f
  * 取景框设置页：上半部分是一个取景框示意（方形，可上下拖动定位），下半部分是调整参数。
  * 记录垂直位置、宽度、圆角三个参数，供主界面取景框使用。
  */
-class ViewfinderSettingsActivity : ComponentActivity() {
+class ViewfinderSettingsActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -208,11 +210,11 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                             .clickable(onClick = onBack),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = onSurface(isDark))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.cd_back), tint = onSurface(isDark))
                     }
                     Spacer(Modifier.width(12.dp))
                 }
-                Text("调整取景框", style = MaterialTheme.typography.titleLarge, color = onSurface(isDark))
+                Text(stringResource(R.string.vf_title), style = MaterialTheme.typography.titleLarge, color = onSurface(isDark))
                 Spacer(Modifier.weight(1f))
                 // 引导流程：右上「完成」药丸按钮
                 if (onboarding) {
@@ -225,7 +227,7 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "完成",
+                            stringResource(R.string.dialog_done),
                             style = MaterialTheme.typography.titleMedium,
                             color = if (isDark) Color.White else RetroCream,
                         )
@@ -252,12 +254,12 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("还原默认", style = MaterialTheme.typography.titleMedium, color = RetroCream)
+                    Text(stringResource(R.string.di_reset), style = MaterialTheme.typography.titleMedium, color = RetroCream)
                 }
 
-                SettingSlider("上下位置", posY, { posY = it }, { commit() }, 0f..1f, "${(posY * 100).roundToInt()}%", isDark)
-                SettingSlider("宽度", width, { width = it }, { commit() }, 120f..400f, "${width.roundToInt()} dp", isDark)
-                SettingSlider("圆角", corner, { corner = it }, { commit() }, 0f..120f, "${corner.roundToInt()} dp", isDark)
+                SettingSlider(stringResource(R.string.vf_pos_y), posY, { posY = it }, { commit() }, 0f..1f, "${(posY * 100).roundToInt()}%", isDark)
+                SettingSlider(stringResource(R.string.common_width), width, { width = it }, { commit() }, 120f..400f, "${width.roundToInt()} dp", isDark)
+                SettingSlider(stringResource(R.string.common_corner), corner, { corner = it }, { commit() }, 0f..120f, "${corner.roundToInt()} dp", isDark)
             }
         }
 
@@ -266,16 +268,16 @@ private fun ViewfinderSettingsContent(onboarding: Boolean, onDone: () -> Unit, o
                 onDismissRequest = { showReset = false },
                 // 容器色随深色模式：深色=深灰卡片，浅色=奶油白
                 containerColor = surfaceCard(isDark),
-                title = { Text("还原默认", color = onSurface(isDark)) },
-                text = { Text("确定要将取景框参数还原为默认值吗？此操作不可撤销。", color = onSurface(isDark)) },
+                title = { Text(stringResource(R.string.di_reset), color = onSurface(isDark)) },
+                text = { Text(stringResource(R.string.vf_reset_confirm), color = onSurface(isDark)) },
                 confirmButton = {
                     TextButton(onClick = {
                         scope.launch { context.saveViewfinder { ViewfinderConfig() } }
                         showReset = false
-                    }) { Text("还原", color = RetroRust) }
+                    }) { Text(stringResource(R.string.action_reset), color = RetroRust) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showReset = false }) { Text("取消", color = onSurfaceSoft(isDark)) }
+                    TextButton(onClick = { showReset = false }) { Text(stringResource(R.string.dialog_cancel), color = onSurfaceSoft(isDark)) }
                 },
             )
         }

@@ -23,6 +23,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -40,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import com.genkaim.picocam.ui.LangAutoSizeText
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -52,10 +54,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
 import com.genkaim.picocam.FlashMode
+import com.genkaim.picocam.R
 import com.genkaim.picocam.ui.theme.RetroBrown
 import com.genkaim.picocam.ui.theme.RetroBrownLight
 import com.genkaim.picocam.ui.theme.RetroCream
@@ -138,12 +143,15 @@ fun CameraParamItem(
                 Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(name, color = if (isDark) Color.White else Color(0xFF6B5744), fontSize = 13.sp)
+                LangAutoSizeText(name, color = if (isDark) Color.White else Color(0xFF6B5744), maxFontSize = 13.sp, modifier = Modifier.widthIn(max = 80.dp))
                 Spacer(Modifier.width(4.dp))
                 // 与滤镜区域一致的"横滑调节"提示图标 < >
                 SlideHintIcon(color = if (isDark) Color(0xFFCFCFCF) else Color(0xFFB6A796))
-                Spacer(Modifier.weight(1f))
-                Text(valueText, color = if (isDark) Color.White else RetroBrown, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                // 右侧参数值：用 weight(1f) Box 约束宽度，避免"Auto"等长文本溢出
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    LangAutoSizeText(valueText, color = if (isDark) Color.White else RetroBrown, maxFontSize = 13.sp, minFontSize = 7.sp,
+                        fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+                }
             }
         }
         // 滑动示意气泡：浮于项正上方，深色填充比例 + 实时参数值（与滤镜滑块弹窗风格一致）
@@ -186,16 +194,16 @@ private fun ParamHintBubble(fraction: Float, label: String, modifier: Modifier =
         )
         // 最左端固定标注"默认"——填充盖住时改为浅色保证可读
         Text(
-            "默认",
+            stringResource(R.string.param_default),
             color = if (frac > 0.12f) Color.White else Color(0xFF3A2E22),
             fontSize = 11.sp,
             modifier = Modifier.align(Alignment.CenterStart).padding(start = 14.dp),
         )
         // 中间实时参数值
-        Text(
+        LangAutoSizeText(
             label,
             color = if (frac >= 0.5f) Color.White else Color(0xFF3A2E22),
-            fontSize = 13.sp,
+            maxFontSize = 13.sp,
             modifier = Modifier.align(Alignment.Center),
         )
     }
@@ -246,7 +254,7 @@ private fun FlashButton(flashMode: FlashMode, isDark: Boolean, onClick: () -> Un
             }
             // 关闭态：深肤色用棕、深灰底用白；开启/自动态铁锈红高亮
             val offTint = if (isDark) Color.White else RetroBrownLight
-            Icon(icon, contentDescription = "闪光灯",
+            Icon(icon, contentDescription = stringResource(R.string.cd_flash),
                 tint = if (mode == FlashMode.OFF) offTint else RetroRust)
         }
     }
@@ -260,7 +268,7 @@ private fun SwitchCameraButton(isBackCamera: Boolean, isDark: Boolean, onClick: 
         rotation += 180f
         onClick()
     }) {
-        Icon(Icons.Filled.Cameraswitch, contentDescription = "切换摄像头",
+        Icon(Icons.Filled.Cameraswitch, contentDescription = stringResource(R.string.cd_switch_camera),
             tint = if (isDark) Color.White else RetroBrown, modifier = Modifier.rotate(rot))
     }
 }
@@ -268,7 +276,7 @@ private fun SwitchCameraButton(isBackCamera: Boolean, isDark: Boolean, onClick: 
 @Composable
 private fun SettingsButton(isDark: Boolean, onClick: () -> Unit) {
     RetroCircleButton(onClick = onClick) {
-        Icon(Icons.Filled.Settings, contentDescription = "设置", tint = if (isDark) Color.White else RetroBrown)
+        Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.cd_settings), tint = if (isDark) Color.White else RetroBrown)
     }
 }
 
@@ -277,7 +285,7 @@ private fun EffectsButton(effectsExpanded: Boolean, isDark: Boolean, onClick: ()
     RetroCircleButton(onClick = onClick) {
         Icon(
             imageVector = if (effectsExpanded) Icons.Filled.Close else Icons.Filled.AutoAwesome,
-            contentDescription = "特效",
+            contentDescription = stringResource(R.string.cd_effects),
             tint = if (effectsExpanded) RetroRust else if (isDark) Color.White else RetroBrown,
         )
     }

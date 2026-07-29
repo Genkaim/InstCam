@@ -4,17 +4,21 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import com.genkaim.picocam.BaseActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.genkaim.picocam.dynamic.AppPrefs
 import com.genkaim.picocam.ui.CameraScreen
 import com.genkaim.picocam.ui.theme.PicocamTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : BaseActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -22,6 +26,12 @@ class MainActivity : ComponentActivity() {
         hideStatusBar()
         setContent {
             PicocamTheme {
+                // 运行时切换语言后，从设置页返回本页时重新创建以套用新语言（设置页自身已 recreate）
+                val langMode = AppPrefs.lang.collectAsStateWithLifecycle()
+                val initialLang = remember { langMode.value.mode }
+                LaunchedEffect(langMode.value.mode) {
+                    if (langMode.value.mode != initialLang) recreate()
+                }
                 CameraScreen()
             }
         }

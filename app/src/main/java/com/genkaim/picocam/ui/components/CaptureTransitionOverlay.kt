@@ -48,6 +48,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.res.stringResource
+import com.genkaim.picocam.R
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -291,7 +293,8 @@ fun CaptureTransitionOverlay(
         val MIN_APPEAR_GAP_MS = 300L   // 加长完成后到照片出现的最小间隔(ms)：两设备都至少等这么久 → 一致
         if (waitedMs < MIN_APPEAR_GAP_MS) delay(MIN_APPEAR_GAP_MS - waitedMs)
         showPhoto = true                                                          // ④ addPolaroidFrame 已完成，读到带白框版本
-        emit.animateTo(1f, tween(durationMillis = 1700, easing = PrinterEasing))  // ⑤ 打印
+        com.genkaim.picocam.camera.SoundEffects.playPrint()                      // 开始打印前播放打印音效
+        emit.animateTo(1f, tween(durationMillis = 2100, easing = PrinterEasing))  // ⑤ 打印
         showDetail = true                                                         // ⑥ 背景进入模糊/预览模式
         onDetailState(true)
         showButtons = true                                                       // ⑦ 照片开始放大即触发按钮渐入（与放大同步，不滞后、不被打印掩盖）
@@ -537,7 +540,7 @@ fun CaptureTransitionOverlay(
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
-                    Text("调整", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
+                    Text(stringResource(R.string.action_adjust), color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
                 }
 
                 Spacer(Modifier.width(2.dp))
@@ -553,7 +556,7 @@ fun CaptureTransitionOverlay(
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(22.dp), tint = btnIconColor)
-                    Text("分享", color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
+                    Text(stringResource(R.string.action_share), color = btnIconColor, fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
                 }
 
                 Spacer(Modifier.width(16.dp))
@@ -584,12 +587,12 @@ private suspend fun shareImage(context: Context, file: File) {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        val chooser = Intent.createChooser(sendIntent, "分享照片").apply {
+        val chooser = Intent.createChooser(sendIntent, context.getString(R.string.camera_share_single)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(chooser)
     } catch (e: Exception) {
-        Toast.makeText(context, "分享失败：${e.localizedMessage ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.toast_share_failed, e.localizedMessage ?: context.getString(R.string.unknown_error)), Toast.LENGTH_SHORT).show()
     }
 }
 

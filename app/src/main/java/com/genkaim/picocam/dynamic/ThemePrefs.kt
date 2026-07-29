@@ -7,15 +7,16 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.genkaim.picocam.R
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /** 主题模式。 */
-enum class ThemeMode(val label: String) {
-    LIGHT("浅色"),
-    DARK("深色"),
-    SYSTEM("跟随系统");
+enum class ThemeMode(val label: String, val labelRes: Int) {
+    LIGHT("浅色", R.string.theme_light),
+    DARK("深色", R.string.theme_dark),
+    SYSTEM("跟随系统", R.string.theme_system);
 
     companion object {
         fun fromOrdinal(o: Int) = entries.getOrElse(o) { SYSTEM }

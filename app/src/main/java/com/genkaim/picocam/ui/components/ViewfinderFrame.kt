@@ -135,15 +135,21 @@ fun ViewfinderFrame(
             update = { previewView.value = it },
         )
         // 暗角（深色模式/滤镜）：按 cornerDp 独立裁切，外观完全不变（"光晕"不动）。
+        // 与落盘(PhotoStorage.applyFilterToBitmap/bakeVignette)及编辑器预览完全一致：
+        // 强度 = vignette*0xD9、半径 = hypot(w/2,h/2)、渐变停靠 [0,0.4,1]（0~40% 透明后渐暗）、中心=画面中心 → 所见即所得。
         if (vignette > 0f) {
             Canvas(Modifier.fillMaxSize().clip(RoundedCornerShape(cornerDp.dp))) {
-                val r = size.maxDimension * 0.75f
+                val r = kotlin.math.hypot(size.width / 2f, size.height / 2f)
                 val cx = size.width / 2f
-                val cy = size.height / 2.2f
-                val a = (vignette * 0xB0).toInt().coerceIn(0, 255)
+                val cy = size.height / 2f
+                val a = (vignette * 0xD9).toInt().coerceIn(0, 255)
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(Color.Transparent, Color.Transparent, Color(android.graphics.Color.argb(a, 0, 0, 0))),
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            0.4f to Color.Transparent,
+                            1f to Color(android.graphics.Color.argb(a, 0, 0, 0)),
+                        ),
                         center = Offset(cx, cy),
                         radius = r,
                     ),
